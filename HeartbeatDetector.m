@@ -1,6 +1,13 @@
 %% HeartbeatDetector.m
 % Semi-automated R-wave detection and interactive review for ECG tag data
 %
+% Version 3.1
+%
+% Created by: Cameron Nemeth, with Claude
+% Email: ncnemeth@hawaii.edu
+%
+% Last modified: 28-10-2026
+%
 % HOW TO USE
 %   1. Keep this script directly in the top-level project folder (e.g.
 %      D:\HeartRate): the folder that contains the deployment folders. Not
@@ -9,18 +16,21 @@
 %
 %   2. Put each deployment in its own folder next to the script (any name).
 %      Create a "Data" folder with another folder inside called "Raw". The
-%      script will create "Processed". 
-%      The Raw folder should contain the LabChart file (any name; not used by the
-%      script) and the text file exported from it (any name). The text file
-%      is a LabChart "Export As Text" file with the block header included
-%      (time column first, tab-separated, one column per channel), as
-%      described in the IMPORT section. 
+%      script will create "Processed".
+%      The Raw folder holds the raw data text file (any name). It can be:
+%        - a LabChart "Export As Text" file with the block header, or
+%        - a file with one row of column names above the numbers, or
+%        - a file of numbers only (no column names).
+%      Columns can be separated by tabs, commas or spaces, and time must be
+%      in seconds. If there is no time column, the sampling rate is entered
+%      in SETTINGS instead. Other files (e.g. the LabChart file itself) can
+%      sit in Raw too; the script only reads the file named in SETTINGS.
 %
 %   3. Edit the SETTINGS section below: enter the deployment folder name and
-%      the text file name exactly as they appear in the folders, plus tag
-%      on/off (if known), channel names and notes. The FILTERING, AUTOMATIC
-%      R-WAVE DETECTION and REVIEW sections each start with their own tuning
-%      values.
+%      the text file name exactly as they appear in the folders, which
+%      columns hold time, ECG, depth and acceleration (by name or column
+%      number; depth and acceleration are optional), plus tag on/off (if known) and notes. The FILTERING, AUTOMATIC R-WAVE
+%      DETECTION and REVIEW sections each start with their own tuning values.
 %
 %   4. Save (Ctrl+S), then run SECTION BY SECTION, IN ORDER from the top:
 %      click inside the SETTINGS section and press Ctrl+Shift+Enter (Run and
@@ -31,8 +41,10 @@
 %        Processed\<deployment>_Heartbeats.csv
 %            Every beat: Time (s, original recording time), Certainty
 %            (1 = certain, 2 = possible), NoPriorBeat (1 = no known beat
-%            before it), RRInterval (s) and HeartRate (bpm). RRInterval and
-%            HeartRate are empty (NaN) where NoPriorBeat = 1.
+%            before it), RRInterval (s), HeartRate (bpm), Segment (1, 2,
+%            3, ...: a new segment starts at each beat with NoPriorBeat = 1)
+%            and Comment. RRInterval and HeartRate are empty (NaN) where
+%            NoPriorBeat = 1.
 %        Processed\<deployment>_Settings.csv
 %            The settings used for this deployment, for reference and review.
 %        Raw\<deployment>_imported_time_depth_ecg.mat
@@ -41,7 +53,12 @@
 %            it is rebuilt automatically.
 %        HeartRate_Reference_Settings.csv (in the project folder)
 %            A running list of the settings used for every deployment.
-%    
+%        HeartRate_Progress.csv (in the project folder)
+%            Who processed and reviewed each deployment, when, how far
+%            (checkpoint time) and whether each stage is complete, plus a
+%            Comments column that keeps every note added (date, name and
+%            role first; notes separated by semicolons).
+%
 %
 % All paths are built relative to this script's location, so the whole
 % project folder can be moved or shared without changing any code.
@@ -56,29 +73,55 @@
 %   settings used for every deployment, for comparison across deployments
 %   and species.
 %
-% Version: 0.9 (import, tag on/off, filtering, detection, review, settings record)
 
 %% ---- SETTINGS (edit this section for each deployment) ---------------
 clear; clc; close all;
 
-settings.species    = 'Turtle';          % Species. This is recorded in the settings sheets
-settings.deployment = 'SevillaTurtle_06102026';      % Folder name inside project
-settings.rawFile    = 'SevillaTurtle_06102026.txt';  % LabChart text export
+settings.species    = 'Loggerhead Turtle';          % Species. This is recorded in the settings sheets
+settings.deployment = '21-Oct-2026-Frankie-2-suction-cups-';      % Folder name inside project
+settings.rawFile    = 'ecg_temp_depth_new-frankei oct 21-2026.txt';  % raw data text export, .txt or .csv
 
 % Tag on/off times, in seconds from the start of the recording.
 % If known, enter them here. If left empty [], you will click them
 % on the overview plot.
-settings.tagOnTime  = [0.184];
-settings.tagOffTime = [23261.64];
+settings.tagOnTime  = [550];
+settings.tagOffTime = [15600];
 
-% Channel names exactly as they appear in LabChart's ChannelTitle line
-% This can be found in the text file that was exported from Labchart
-settings.ecgChannel   = 'ecg'; % Raw ECG values
-settings.depthChannel = 'depth'; % Depth values
+% Columns to use. Give each one EITHER as a NAME in quotes, exactly as it
+% is written in the file, OR as a column NUMBER, counting the columns of
+% numbers from the left (1 = first column).
+%   LabChart export: use names from the ChannelTitle line. The first
+%     column is time, which LabChart leaves unnamed: use 'Time' (or 1).
+%     Careful with numbers here: because time comes first, the first name
+%     on the ChannelTitle line is column 2, not column 1.
+%   File with a row of column names (e.g. Time,ECG,Depth): use the names.
+%   File of numbers only: use column numbers.
+% The script prints which columns it used, so check that after importing.
+% Depth is optional: if the file has no depth, set depthChannel = []. The
+% depth strips in the windows are then left empty; nothing else changes.
+settings.timeChannel  = 1;        % time column (seconds), or [] if the file has none
+settings.ecgChannel   = 'ECG';         % raw ECG values
+settings.depthChannel = 'Depth (m)';   % depth values, or [] if the file has none
+
+% Acceleration (optional): one setting per axis, each a column name or
+%   number, or [] if that axis is not in the file. Fill in all three for a
+%   3-axis tag, just one for a single-axis tag, or leave all three [] for
+%   none. Acceleration is for display only (a strip above depth, to help
+%   spot movement, e.g. muscle noise in the ECG); it is not used for
+%   detection.
+settings.accelX = [];                 % X axis
+settings.accelY = [];                  % Y axis
+settings.accelZ = [];                  % Z axis
+
+% Sampling rate (Hz): ONLY needed if the file has no time column
+%   (settings.timeChannel = []). Times are then counted from 0 s at the
+%   first row. If the file does have a time column, the rate is worked out
+%   from it and this value is ignored (a note is printed). Example: 250.
+settings.sampleRateHz = [];
 
 % Notes for this deployment, saved in the settings sheets (e.g. 'ECG shifted
 % 17 s in LabChart to align with CATS depth'). Leave as '' if none.
-settings.notes = 'Turtle species unknown (CN 06/10/2026)';
+settings.notes = 'Temperature might actually be depth. think it was swapped.';
 
 %% ---- PATHS (no editing needed) --------------------------------------
 % Find the project folder (MATLAB's version of R's here()): the folder that
@@ -129,16 +172,47 @@ else
 end
 
 %% ---- IMPORT -------------------------------------------------------------
-% Reads time, ECG, and depth from the LabChart text export.
+% Reads time, ECG, depth and acceleration from the raw text file. Three kinds of file are
+% recognized automatically:
+%   1. LabChart "Export As Text" with the block header: column names come
+%      from the ChannelTitle line, and the first (unnamed) column is time,
+%      which the script calls 'Time'.
+%   2. A file with one row of column names above the numbers
+%      (e.g. Time,ECG,Depth). If there are several lines above the numbers,
+%      the last one is taken as the column names.
+%   3. A file of numbers only (no column names).
+% Columns may be separated by tabs, commas or spaces. The columns to use
+% are chosen in SETTINGS (timeChannel, ecgChannel, depthChannel), by name
+% or by column number. Time must be in seconds. ECG is required; depth is
+% optional (settings.depthChannel = []: the Depth column is left empty, NaN,
+% and the depth strips in the windows are blank). Acceleration is optional
+% too: each axis set in settings.accelX/Y/Z is added to the data as AccX,
+% AccY or AccZ; axes left as [] are not loaded.
+% Sampling rate: worked out from the time column (the typical gap between
+% consecutive times). If there is no time column, it comes from
+% settings.sampleRateHz, and times are counted from 0 s at the first row.
+% The file type, the columns used and the sampling rate are printed in the
+% Command Window on every run, so they can be checked.
+%
 % The first run reads the text file (slow) and saves a .mat copy of just
 % the time, depth and ECG columns in the Raw folder, next to the text file
 % (<deployment>_imported_time_depth_ecg.mat). Later runs load that copy
 % instead (fast). If the text file has been modified since the copy was
-% saved (e.g. a re-export from LabChart), a popup asks whether to re-import
-% it. To force a fresh import, delete the .mat file in the Raw folder.
+% saved (e.g. a re-export), a popup asks whether to re-import it. The copy
+% is also rebuilt automatically if the raw file name or any column setting
+% changes. To force a fresh import, delete the .mat file in the Raw folder.
 cacheFile = fullfile(fileparts(paths.raw), ...                      % the Raw folder
     [settings.deployment '_imported_time_depth_ecg.mat']);
-useCache  = isfile(cacheFile);   % is there a saved copy?
+
+% The column settings for this run, as one line of text, so the saved copy
+% can be checked against them
+channelKey = sprintf('time=%s | ecg=%s | depth=%s | acc=%s/%s/%s | rate=%s', ...
+    settingToText(settings.timeChannel), settingToText(settings.ecgChannel), ...
+    settingToText(settings.depthChannel), settingToText(settings.accelX), ...
+    settingToText(settings.accelY), settingToText(settings.accelZ), ...
+    settingToText(settings.sampleRateHz));
+
+useCache = isfile(cacheFile);              % is there a saved copy?
 
 if useCache
     % If the raw text file was modified after the saved copy was made,
@@ -146,11 +220,11 @@ if useCache
     rawInfo   = dir(paths.raw);
     cacheInfo = dir(cacheFile);
     if rawInfo.datenum > cacheInfo.datenum
-        choice = questdlg(['The raw data file has changed since it was last ' ...
+        reimportChoice = questdlg(['The raw data file has changed since it was last ' ...
             'imported. Re-import it?'], ...
             'Newer raw file found', ...
             'Re-import', 'Use saved copy', 'Re-import');
-        if strcmp(choice, 'Re-import')
+        if strcmp(reimportChoice, 'Re-import')
             useCache = false;
         else
             fprintf('Using saved copy. It may not match the newer raw file.\n');
@@ -161,88 +235,182 @@ end
 if useCache
     cached = load(cacheFile);
     % Re-read the text file if the saved copy came from a different raw
-    % file, or used different channels, than the current settings
+    % file, or used different column settings, than this run
     if ~isfield(cached, 'rawFile') || ~strcmp(cached.rawFile, settings.rawFile)
         fprintf('Saved copy came from a different raw file. Re-reading text file.\n');
         useCache = false;
-    elseif ~strcmp(cached.channels.ecg, settings.ecgChannel) || ...
-            ~strcmp(cached.channels.depth, settings.depthChannel)
-        fprintf('Channel settings changed since last import. Re-reading text file.\n');
+    elseif ~isfield(cached, 'channelKey') || ~strcmp(cached.channelKey, channelKey)
+        fprintf('Column settings changed since last import. Re-reading text file.\n');
         useCache = false;
     end
 end
 
 if useCache
-    data = cached.data;
-    fs   = cached.fs;
+    data       = cached.data;
+    fs         = cached.fs;
+    importInfo = cached.importInfo;
     fprintf('Loaded saved import: %s\n', cacheFile);
 else
-    % --- Read the header: everything before the first line starting with a number
+    % --- 1) Read the top of the file: every line before the first line that
+    %     starts with a number is a header line; that first numeric line is
+    %     the first row of data
     fid = fopen(paths.raw, 'r');
-    nHeader = 0; interval = NaN; titles = {};
+    nHeader = 0;  header = {};  firstData = '';
     while true
         txt = fgetl(fid);
-        if ~ischar(txt), break; end
-        if ~isempty(regexp(txt, '^\s*-?\d', 'once')), break; end
-        nHeader = nHeader + 1;
-        if startsWith(txt, 'Interval=')
-            tok = regexp(txt, 'Interval=\s*([-+\d\.eE]+)', 'tokens', 'once');
-            interval = str2double(tok{1});
-        elseif startsWith(txt, 'ChannelTitle=')
-            parts  = strtrim(strsplit(txt, char(9)));   % split on tabs
-            titles = parts(2:end);
-            titles = titles(~cellfun('isempty', titles));
+        if ~ischar(txt), break; end                          % end of file
+        if ~isempty(regexp(txt, '^\s*[-+]?\.?\d', 'once'))   % starts with a number
+            firstData = txt;
+            break
         end
+        nHeader = nHeader + 1;
+        header{end + 1} = txt;                               %#ok<AGROW>
     end
     fclose(fid);
-
-    if isnan(interval) || isempty(titles)
-        error('Could not read Interval or ChannelTitle from the file header.');
+    if isempty(firstData)
+        error('No rows of numbers were found in %s.', settings.rawFile);
     end
 
-    % --- Find the requested channels by name
-    ecgIdx   = find(strcmp(titles, settings.ecgChannel));
-    depthIdx = find(strcmp(titles, settings.depthChannel));
-    if isempty(ecgIdx) || isempty(depthIdx)
-        error('Channel not found. Channels in this file:\n  %s', strjoin(titles, '\n  '));
+    % --- 2) How the columns are separated (judged from the first data row)
+    if contains(firstData, char(9))
+        sepChar = char(9);  fileSep = 'tabs';
+    elseif contains(firstData, ',')
+        sepChar = ',';      fileSep = 'commas';
+    else
+        sepChar = '';       fileSep = 'spaces';              % one or more spaces
+    end
+    dataFields = splitFields(firstData, sepChar);
+    nCols = find(~cellfun('isempty', dataFields), 1, 'last');   % columns of numbers
+
+    % --- 3) Column names, if the file has them
+    names    = {};
+    interval = NaN;                            % LabChart's Interval line, if present
+    if ~isempty(header) && any(startsWith(header, 'ChannelTitle='))
+        fileType = 'LabChart export';
+        for h = 1:numel(header)
+            if startsWith(header{h}, 'Interval=')
+                tok = regexp(header{h}, 'Interval=\s*([-+\d\.eE]+)', 'tokens', 'once');
+                if ~isempty(tok), interval = str2double(tok{1}); end
+            elseif startsWith(header{h}, 'ChannelTitle=')
+                parts  = strtrim(strsplit(header{h}, char(9)));   % split on tabs
+                titles = parts(2:end);
+                titles = titles(~cellfun('isempty', titles));
+                names  = [{'Time'}, titles];   % LabChart leaves the time column unnamed
+            end
+        end
+        nCols = numel(names);                  % time + one column per channel
+    elseif nHeader > 0
+        fileType = 'row of column names';
+        names = strrep(splitFields(header{end}, sepChar), '"', '');   % last header line
+        if numel(names) ~= nCols
+            warning(['The column-name row has %d names but the data rows have %d ' ...
+                'columns, so names may not line up with the right columns. ' ...
+                'If so, use column numbers in SETTINGS instead.'], numel(names), nCols);
+        end
+    else
+        fileType = 'numbers only (no column names)';
     end
 
-    % --- Build a read format that keeps only time, ECG, and depth
-    nCols  = numel(titles) + 1;                     % +1 for the time column
-    wanted = [1, ecgIdx + 1, depthIdx + 1];
+    % --- 4) Which columns hold time, ECG and depth (name or number -> number)
+    timeIdx  = findColumn(settings.timeChannel,  names, nCols, 'settings.timeChannel');
+    ecgIdx   = findColumn(settings.ecgChannel,   names, nCols, 'settings.ecgChannel');
+    depthIdx = findColumn(settings.depthChannel, names, nCols, 'settings.depthChannel');
+    accAxes  = {'X', 'Y', 'Z'};
+    accIdx   = [findColumn(settings.accelX, names, nCols, 'settings.accelX'), ...
+        findColumn(settings.accelY, names, nCols, 'settings.accelY'), ...
+        findColumn(settings.accelZ, names, nCols, 'settings.accelZ')];   % 0 = axis not used
+    if ecgIdx == 0
+        error('settings.ecgChannel must be set (a column name or number).');
+    end
+    if timeIdx == 0 && isempty(settings.sampleRateHz)
+        error(['settings.timeChannel is empty (no time column), so ' ...
+            'settings.sampleRateHz is needed (e.g. 250).']);
+    end
+
+    % --- 5) Build a read format that keeps only the needed columns
+    wanted = unique([timeIdx, ecgIdx, depthIdx, accIdx]);   % sorted = order in the file
+    wanted = wanted(wanted > 0);                    % 0 = column not used
     fmt = repmat({'%*f'}, 1, nCols);                % %*f = skip this column
     fmt(wanted) = {'%f'};                           % %f  = keep this column
     fmt = [strjoin(fmt, '') '%*[^\n]'];             % ignore any trailing text (comments)
 
-    % --- Read the data
+    % --- 6) Read the data
     fprintf('Reading %s (this may take a few minutes)...\n', settings.rawFile);
+    if isempty(sepChar)
+        sepArgs = {};                               % spaces: MATLAB's default splitting
+    else
+        sepArgs = {'Delimiter', sepChar};
+    end
     fid = fopen(paths.raw, 'r');
-    C = textscan(fid, fmt, 'Delimiter', '\t', 'HeaderLines', nHeader, ...
-        'ReturnOnError', true);
+    C = textscan(fid, fmt, sepArgs{:}, 'HeaderLines', nHeader, 'ReturnOnError', true);
     reachedEnd = feof(fid);
     fclose(fid);
 
     if ~reachedEnd
         warning(['Reading stopped before the end of the file. The file may ' ...
-            'contain more than one LabChart block. Only the first was loaded.']);
+            'contain more than one LabChart block, or a line that is not ' ...
+            'numbers. Only the part before it was loaded.']);
     end
 
-    % --- Put the columns into a table (textscan returns them in file order)
-    n = min(cellfun(@numel, C));
-    sortedCols = sort(wanted);
-    getCol = @(col) C{sortedCols == col}(1:n);
-    data = table(getCol(1), getCol(ecgIdx + 1), getCol(depthIdx + 1), ...
-        'VariableNames', {'Time', 'ECG', 'Depth'});
-    fs = 1 / interval;
-    clear C
+    % --- 7) Pick out the columns (textscan returns them in file order)
+    n = min(cellfun(@numel, C));                    % same length for every column
+    getCol = @(col) C{wanted == col}(1:n);
+    ecgVals   = getCol(ecgIdx);
+    if depthIdx > 0
+        depthVals = getCol(depthIdx);
+    else
+        depthVals = NaN(n, 1);                      % no depth in this file
+    end
+    accVals = cell(1, 3);                           % acceleration, one cell per axis
+    for a = find(accIdx > 0)                        % only the axes in use
+        accVals{a} = getCol(accIdx(a));
+    end
 
-    % --- Save a fast-loading copy, recording where it came from
-    channels.ecg   = settings.ecgChannel;
-    channels.depth = settings.depthChannel;
-    rawFile        = settings.rawFile;
-    save(cacheFile, 'data', 'fs', 'channels', 'rawFile', '-v7.3');
+    % --- 8) Time (s) and sampling rate
+    if timeIdx > 0
+        timeVals = getCol(timeIdx);
+        fs = 1 / median(diff(timeVals));            % typical gap between samples
+        rateNote = 'from the time column';
+        if ~isempty(settings.sampleRateHz)
+            fprintf(['Note: settings.sampleRateHz (%g) is ignored because the ' ...
+                'file has a time column.\n'], settings.sampleRateHz);
+        end
+        if ~isnan(interval) && abs(1 / fs - interval) > 0.01 * interval
+            warning(['The time column gives %g Hz, but the LabChart header says ' ...
+                '%g Hz. Check the export.'], fs, 1 / interval);
+        end
+    else
+        fs = settings.sampleRateHz;
+        timeVals = (0:n - 1)' / fs;                 % 0, 1/fs, 2/fs, ... seconds
+        rateNote = 'from settings.sampleRateHz';
+    end
+    data = table(timeVals, ecgVals, depthVals, 'VariableNames', {'Time', 'ECG', 'Depth'});
+    for a = find(accIdx > 0)                        % only the axes in use
+        data.(['Acc' accAxes{a}]) = accVals{a};     % new columns AccX, AccY, AccZ
+    end
+    clear C timeVals ecgVals depthVals accVals
+
+    % --- 9) Summary of what was read (printed now and on every later run)
+    accText = 'none';
+    if any(accIdx > 0)
+        accParts = arrayfun(@(a) describeColumn(['Acc ' accAxes{a}], accIdx(a), names), ...
+            find(accIdx > 0), 'UniformOutput', false);
+        accText = strjoin(accParts, '  |  ');
+    end
+    importInfo = sprintf(['File type: %s (columns separated by %s)\n' ...
+        'Columns used: %s  |  %s  |  %s\n' ...
+        'Acceleration: %s\n' ...
+        'Sampling rate: %g Hz (%s)\n'], fileType, fileSep, ...
+        describeColumn('Time',  timeIdx,  names), ...
+        describeColumn('ECG',   ecgIdx,   names), ...
+        describeColumn('Depth', depthIdx, names), accText, fs, rateNote);
+
+    % --- 10) Save a fast-loading copy, recording where it came from
+    rawFile = settings.rawFile;
+    save(cacheFile, 'data', 'fs', 'channelKey', 'rawFile', 'importInfo', '-v7.3');
     fprintf('Saved import to: %s\n', cacheFile);
 end
+fprintf('%s', importInfo);                     % file type, columns used, sampling rate
 
 % --- Basic checks
 dt = diff(data.Time);
@@ -259,9 +427,9 @@ fprintf('NaN values - ECG: %d, Depth: %d\n', sum(isnan(data.ECG)), sum(isnan(dat
 
 
 
-
 %% ---- OVERVIEW PLOT AND TAG ON/OFF -----------------------------------------
-% Shows depth (top) and ECG (bottom) for the whole recording, in seconds.
+% Shows the whole recording, in seconds: acceleration and depth strips at
+% the top (whichever are set in SETTINGS) and the ECG below.
 % If both tag times are set in SETTINGS, they are drawn and used.
 % Otherwise: use the zoom/pan tools to find each time, click Set Tag On
 % or Set Tag Off and then click on the plot, and finally click Done.
@@ -282,37 +450,43 @@ if ~isempty(tagOn) && ~isempty(tagOff) && tagOff <= tagOn
     error('settings.tagOffTime must be later than settings.tagOnTime.');
 end
 
-% --- Build the figure: depth panel on top, ECG panel below
-overviewFig = figure('Name', 'Overview: depth and ECG', 'NumberTitle', 'off', ...
-    'Units', 'normalized', 'Position', [0.05 0.1 0.9 0.8]);
-axDepth = axes(overviewFig, 'Position', [0.07 0.80 0.9 0.14]);   % thin depth strip
-axECG   = axes(overviewFig, 'Position', [0.07 0.14 0.9 0.63]);   % tall ECG panel
+% --- Which thin strips to show above the ECG (top to bottom: acceleration,
+% depth). These are reused by the later windows too.
+accNames = intersect({'AccX', 'AccY', 'AccZ'}, data.Properties.VariableNames, 'stable');
+hasDepth = ~isempty(settings.depthChannel);
+nStrips  = ~isempty(accNames) + hasDepth;  % 0, 1 or 2
 
-hDepth = plot(axDepth, NaN, NaN, 'b');      % empty lines, filled in below
-hECG   = plot(axECG,   NaN, NaN, 'k');      % raw ECG: black, so the tag lines stand out
-set(axDepth, 'YDir', 'reverse');            % deeper = lower on the plot
-ylabel(axDepth, 'Depth (m)');
+% --- Build the figure: strips on top, ECG panel below
+overviewFig = figure('Name', 'Overview', 'NumberTitle', 'off', ...
+    'Units', 'normalized', 'Position', [0.05 0.1 0.9 0.8]);
+[stripPos, mainPos] = panelLayout(nStrips, 1, 0.14, 0.94, 0.14, 0.03);
+[stripAx, stripLines, stripSigs] = addStrips(overviewFig, stripPos, accNames, hasDepth, data);
+axECG = axes(overviewFig, 'Position', mainPos(1, :));   % tall ECG panel
+hECG  = plot(axECG, NaN, NaN, 'k');        % raw ECG: black, so the tag lines stand out
 ylabel(axECG, 'ECG');
 xlabel(axECG, 'Time (s)');
-grid(axDepth, 'on'); grid(axECG, 'on');
+grid(axECG, 'on');
 
-linkaxes([axDepth axECG], 'x');             % zoom/pan both panels together
-axDepth.XTickLabel = {};                    % time labels only on the bottom panel
-setTimeOnlyNavigation(overviewFig, [axDepth axECG]);   % zoom/pan change time only
-keepYFitted(axDepth, hDepth);               % always refit y to the visible trace
-keepYFitted(axECG,   hECG);
-set([axDepth axECG], 'XLim', [t(1) t(end)]);
+axAll = [stripAx axECG];                   % every panel, top to bottom
+axTop = axAll(1);                          % the title goes on the top panel
+linkaxes(axAll, 'x');                      % zoom/pan all panels together
+setTimeOnlyNavigation(overviewFig, axAll); % zoom/pan change time only
+for s = 1:numel(stripAx)                   % always refit y to the visible traces
+    keepYFitted(stripAx(s), stripLines([stripLines.Parent] == stripAx(s)));
+end
+keepYFitted(axECG, hECG);
+set(axAll, 'XLim', [t(1) t(end)]);
 
 % --- Redraw the traces whenever the visible time range changes
-depthVec = data.Depth;
-ecgVec   = data.ECG;
-sigsOverview = {depthVec, ecgVec};          % one data column per panel
+hOverview    = [stripLines hECG];          % every plotted line
+sigsOverview = [stripSigs, {data.ECG}];    % the matching data columns
 addlistener(axECG, 'XLim', 'PostSet', ...
-    @(~, ~) refreshTraces(axECG, [hDepth hECG], t, sigsOverview, fs));
-refreshTraces(axECG, [hDepth hECG], t, sigsOverview, fs);   % first draw
+    @(~, ~) refreshTraces(axECG, hOverview, t, sigsOverview, fs));
+refreshTraces(axECG, hOverview, t, sigsOverview, fs);   % first draw
 
 % --- Store what the buttons need, inside the figure
-S.axDepth  = axDepth;
+S.axTop    = axTop;                        % panel that holds the title
+S.axAll    = axAll;                        % every panel (tag lines go on all)
 S.axECG    = axECG;
 S.t        = t;
 S.fs       = fs;
@@ -324,7 +498,7 @@ drawTagLines(overviewFig);
 
 if isempty(tagOn) || isempty(tagOff)
     % --- One or both times missing: show buttons and wait for the user
-    title(axDepth, 'Zoom/pan to find tag on/off, then use the buttons below');
+    title(axTop, 'Zoom/pan to find tag on/off, then use the buttons below');
 
     enableOn  = 'on';  if ~isempty(tagOn),  enableOn  = 'off'; end
     enableOff = 'on';  if ~isempty(tagOff), enableOff = 'off'; end
@@ -347,11 +521,14 @@ if isempty(tagOn) || isempty(tagOff)
     tagOn  = overviewFig.UserData.tagOn;
     tagOff = overviewFig.UserData.tagOff;
 
-    fprintf('\nTag times accepted. To reuse them, paste these into SETTINGS:\n');
-    fprintf('settings.tagOnTime  = %.3f;\n', tagOn);
-    fprintf('settings.tagOffTime = %.3f;\n', tagOff);
+    fprintf('\nTag times accepted and used for this run:\n');
+    fprintf('  settings.tagOnTime  = %.3f;\n', tagOn);
+    fprintf('  settings.tagOffTime = %.3f;\n', tagOff);
+    fprintf(['They will be saved in the settings sheets when the review window opens.\n' ...
+        'Optional: paste the two lines above into SETTINGS (now or after the run)\n' ...
+        'so later runs use the same times without clicking.\n']);
 else
-    title(axDepth, 'Tag on/off times from SETTINGS');
+    title(axTop, 'Tag on/off times from SETTINGS');
     fprintf('\nUsing tag on/off times from SETTINGS.\n');
 end
 
@@ -389,21 +566,26 @@ settings.highPassHz = 1;
 
 % Low-pass cutoff (Hz): removes fast jitter. Lowering it smooths more, but
 %   too low can blunt sharp R peaks. Must be below half the sampling rate
-%   of the tag. Typical: 25-50 Hz.
+%   of the tag. 
+% Typical: 25-50 Hz.
 settings.lowPassHz = 40;
 
 % Filter order: how sharply the filter cuts off around the two cutoffs.
 %   Higher = sharper, but can add small ripples ("ringing") next to large
-%   peaks. 2-4 is typical; leave at 4 unless there is a reason to change it.
+%   peaks. 
+% 2-4 is typical; leave at 4 unless there is a reason to change it.
 settings.filterOrder = 4;
 
 % Invert ECG: set to true if R waves point DOWNWARD on this tag. The script
 %   prints a suggestion each run. Only the filtered copy used for detection
 %   is flipped; the raw ECG is never changed.
-settings.invertECG = true;
+settings.invertECG = false;
 
-% Show the filter check plot (depth, raw ECG, filtered ECG). Set to false
-%   once the values above are settled, to skip it.
+% THIS CAN JUST STAY TRUE
+% False just skips the figure pane for this filtering step.
+% Show the filter check plot (raw and filtered ECG, below any acceleration
+%   and depth strips). Set to false once the values above are settled, to
+%   skip it.
 settings.showFilterCheck = true;
 
 
@@ -460,40 +642,43 @@ clear ecgFilt
 fprintf('Filtered ECG: %g-%g Hz band-pass, order %d, zero-phase.\n', ...
     settings.highPassHz, settings.lowPassHz, settings.filterOrder);
 
-% --- Check plot: depth, raw ECG, and filtered ECG, linked in time
+% --- Check plot: acceleration/depth strips, raw ECG and filtered ECG,
+% linked in time
 if settings.showFilterCheck
     tCrop = data.Time;
-    filterFig = figure('Name', 'Filter check: depth, raw ECG, filtered ECG', ...
+    filterFig = figure('Name', 'Filter check: raw and filtered ECG', ...
         'NumberTitle', 'off', 'Units', 'normalized', 'Position', [0.05 0.05 0.9 0.85]);
-    axD = axes(filterFig, 'Position', [0.07 0.83 0.9 0.12]);     % thin depth strip
-    axR = axes(filterFig, 'Position', [0.07 0.455 0.9 0.355]);   % raw ECG
-    axF = axes(filterFig, 'Position', [0.07 0.08 0.9 0.355]);    % filtered ECG
+    [stripPos, mainPos] = panelLayout(nStrips, 2, 0.08, 0.95, 0.12, 0.02);
+    [fStripAx, fStripLines, fStripSigs] = addStrips(filterFig, stripPos, accNames, hasDepth, data);
+    axR = axes(filterFig, 'Position', mainPos(1, :));   % raw ECG
+    axF = axes(filterFig, 'Position', mainPos(2, :));   % filtered ECG
 
-    hD = plot(axD, NaN, NaN, 'b');
     hR = plot(axR, NaN, NaN, 'Color', [0.8 0 0]);   % raw ECG: red
     hF = plot(axF, NaN, NaN, 'k');                   % filtered ECG: black
-    set(axD, 'YDir', 'reverse');
-    ylabel(axD, 'Depth (m)');
     ylabel(axR, 'Raw ECG');
     ylabel(axF, 'Filtered ECG');
     xlabel(axF, 'Time (s)');
-    grid(axD, 'on'); grid(axR, 'on'); grid(axF, 'on');
-    title(axD, sprintf('Filter check: %g-%g Hz band-pass, order %d, inverted: %s', ...
+    grid(axR, 'on'); grid(axF, 'on');
+
+    fAll = [fStripAx axR axF];              % every panel, top to bottom
+    title(fAll(1), sprintf('Filter check: %g-%g Hz band-pass, order %d, inverted: %s', ...
         settings.highPassHz, settings.lowPassHz, settings.filterOrder, ...
         mat2str(settings.invertECG)));
-
-    linkaxes([axD axR axF], 'x');
-    axD.XTickLabel = {};                    % time labels only on the bottom panel
-    axR.XTickLabel = {};
-    setTimeOnlyNavigation(filterFig, [axD axR axF]);   % zoom/pan change time only
-    keepYFitted(axD, hD);                   % always refit y to the visible trace
+    linkaxes(fAll, 'x');
+    axR.XTickLabel = {};                    % time labels only on the bottom panel
+    setTimeOnlyNavigation(filterFig, fAll); % zoom/pan change time only
+    for s = 1:numel(fStripAx)               % always refit y to the visible traces
+        keepYFitted(fStripAx(s), fStripLines([fStripLines.Parent] == fStripAx(s)));
+    end
     keepYFitted(axR, hR);
     keepYFitted(axF, hF);
     set(axF, 'XLim', [tCrop(1) tCrop(end)]);
-    sigs = {data.Depth, data.ECG, data.ECG_filtered};
+
+    hFilt = [fStripLines hR hF];            % every plotted line
+    sigs  = [fStripSigs, {data.ECG, data.ECG_filtered}];   % the matching data
     addlistener(axF, 'XLim', 'PostSet', ...
-        @(~, ~) refreshTraces(axF, [hD hR hF], tCrop, sigs, fs));
-    refreshTraces(axF, [hD hR hF], tCrop, sigs, fs);    % first draw
+        @(~, ~) refreshTraces(axF, hFilt, tCrop, sigs, fs));
+    refreshTraces(axF, hFilt, tCrop, sigs, fs);    % first draw
 end
 
 
@@ -535,7 +720,7 @@ settings.noiseWindowS = 3;
 % Maximum heart rate (bpm): two beats can never be closer together than
 %   this allows (120 bpm = 0.5 s). If two peaks are closer, only the one
 %   that stands out most is kept.
-settings.maxHR = 60;
+settings.maxHR = 20;
 
 
 % Oversized-peak filter (removes e.g. surfacing artifacts): a detected beat
@@ -640,7 +825,7 @@ if height(beats) > 1
         60 / median(diff(beats.Time)));
 end
 
-% --- Detection window: thin depth strip + filtered ECG with red circles
+% --- Detection window: acceleration/depth strips + filtered ECG with red circles
 if isempty(beats)
     markerOffset = 0;
 else
@@ -650,37 +835,37 @@ beatY = beats.Height + markerOffset;
 
 detectFig = figure('Name', 'Automatic R-wave detection', 'NumberTitle', 'off', ...
     'Units', 'normalized', 'Position', [0.05 0.05 0.9 0.85]);
-detAxDepth = axes(detectFig, 'Position', [0.07 0.84 0.9 0.11]);   % thin depth strip
-detAxECG   = axes(detectFig, 'Position', [0.07 0.08 0.9 0.73]);   % filtered ECG
+[stripPos, mainPos] = panelLayout(nStrips, 1, 0.08, 0.95, 0.11, 0.03);
+[dStripAx, dStripLines, dStripSigs] = addStrips(detectFig, stripPos, accNames, hasDepth, data);
+detAxECG = axes(detectFig, 'Position', mainPos(1, :));   % filtered ECG
 
-detDepth = plot(detAxDepth, NaN, NaN, 'b');
-detECG   = plot(detAxECG,   NaN, NaN, 'k');
+detECG   = plot(detAxECG, NaN, NaN, 'k');
 hold(detAxECG, 'on');
 detBeats = plot(detAxECG, beats.Time, beatY, 'o', 'LineStyle', 'none', ...
     'MarkerSize', 6, 'MarkerFaceColor', [0.85 0 0], 'MarkerEdgeColor', [0.85 0 0]);
 hold(detAxECG, 'off');
-
-set(detAxDepth, 'YDir', 'reverse');
-ylabel(detAxDepth, 'Depth (m)');
 ylabel(detAxECG, 'Filtered ECG');
 xlabel(detAxECG, 'Time (s)');
-grid(detAxDepth, 'on'); grid(detAxECG, 'on');
-title(detAxDepth, sprintf(['Automatic detection: %d beats  |  stands-out >= %g, ' ...
+grid(detAxECG, 'on');
+
+detAll = [dStripAx detAxECG];              % every panel, top to bottom
+title(detAll(1), sprintf(['Automatic detection: %d beats  |  stands-out >= %g, ' ...
     'steepness >= %g, width <= %g ms, max HR %g bpm, oversized > %gx removed'], ...
     height(beats), settings.minStandOut, settings.minSteepness, ...
     settings.maxWidthMs, settings.maxHR, settings.maxRelSize));
-
-linkaxes([detAxDepth detAxECG], 'x');
-detAxDepth.XTickLabel = {};                % time labels only on the bottom panel
-setTimeOnlyNavigation(detectFig, [detAxDepth detAxECG]);
-keepYFitted(detAxDepth, detDepth);
+linkaxes(detAll, 'x');
+setTimeOnlyNavigation(detectFig, detAll);
+for s = 1:numel(dStripAx)                  % always refit y to the visible traces
+    keepYFitted(dStripAx(s), dStripLines([dStripLines.Parent] == dStripAx(s)));
+end
 keepYFitted(detAxECG, [detECG detBeats]);  % fit the trace AND the red circles
 set(detAxECG, 'XLim', [t(1) t(end)]);
-sigsDet = {data.Depth, data.ECG_filtered};
-addlistener(detAxECG, 'XLim', 'PostSet', ...
-    @(~, ~) refreshDetection(detAxECG, [detDepth detECG], detBeats, t, sigsDet, fs));
-refreshDetection(detAxECG, [detDepth detECG], detBeats, t, sigsDet, fs);   % first draw
 
+hDet    = [dStripLines detECG];            % strip lines, then the ECG (last)
+sigsDet = [dStripSigs, {data.ECG_filtered}];
+addlistener(detAxECG, 'XLim', 'PostSet', ...
+    @(~, ~) refreshDetection(detAxECG, hDet, detBeats, t, sigsDet, fs));
+refreshDetection(detAxECG, hDet, detBeats, t, sigsDet, fs);   % first draw
 
 
 
@@ -690,11 +875,11 @@ refreshDetection(detAxECG, [detDepth detECG], detBeats, t, sigsDet, fs);   % fir
 
 
 %% ---- REVIEW: EDIT BEATS AND MARK BREAKS -----------------------------------
-% Interactive review of the detected beats. This is where beats are locked in.
-% Every edit is saved automatically to <deployment>_Heartbeats.csv in the
-% Processed folder. If that file is open in Excel, the save is blocked and
-% a warning appears: close it in Excel, and your edits are saved with the
-% next edit (or when the review window closes).
+% Edits are saved to <deployment>_Heartbeats.csv in the Processed folder
+% when you click Save & keep working or Save & finish (bottom right). Save
+% every few minutes: unsaved edits are lost if MATLAB closes unexpectedly.
+% The CSV can be open in Excel while you work, but close it there before
+% saving, or the save is blocked (a warning says so; your edits are kept).
 %
 % MARKERS
 %   Red circle    = certain beat  (Certainty 1)
@@ -716,20 +901,23 @@ refreshDetection(detAxECG, [detDepth detECG], detBeats, t, sigsDet, fs);   % fir
 %   Esc (or any click)          -> cancel the selection
 %   Left / right arrow keys     -> move back / forward by most of a window
 %   Z                           -> undo the last edit (repeat to undo more)
-%   Done button (or close)      -> finish the review (saves one last time)
+%   C (pointer over a marker)   -> add, edit or remove a comment on that beat
+%                                  (beats with a comment get a black ring)
+%   Save & keep working button  -> save now and carry on (orange = unsaved
+%                                  changes, green = everything saved)
+%   Save & finish button        -> save, record progress, and close
+%   Closing the window (X)      -> asks to save first if there are unsaved changes
 %   New markers snap to the highest point of the filtered ECG near the click.
 %   NOTE: MATLAB treats a RIGHT click the same as Ctrl + click (adds a red x)
 %   and a MIDDLE click the same as Shift + click (adds a green circle).
 
 % SAVING
-%   Every edit is saved immediately to <deployment>_Heartbeats.csv in the
+%   Save & keep working saves to <deployment>_Heartbeats.csv in the
 %   Processed folder, with columns: Time, Certainty, NoPriorBeat,
-%   RRInterval, HeartRate. Nothing is lost if MATLAB closes unexpectedly.
-%   If that file already exists when the script runs, a popup offers:
-%     Continue review - reopen the saved beats and keep editing
-%     View only       - reopen the saved beats with editing switched off
-%     Start over      - replace them with the automatic detections
-%                       (asks to confirm first; the file is overwritten)
+%   RRInterval, HeartRate, Segment, Comment. The button is orange while
+%   there are unsaved changes and green once everything is saved.
+%   Save & finish saves, asks for progress details (recorded in
+%   HeartRate_Progress.csv in the project folder), and closes the window.
 
 % ---- REVIEW SETTINGS (adjust here as needed) ------------------------------
 % PRE-PLACED x's: only used when a review STARTS from the automatic
@@ -740,8 +928,8 @@ refreshDetection(detAxECG, [detDepth detECG], detBeats, t, sigsDet, fs);   % fir
 %       (median of breakNeighbors gaps on each side). This catches single
 %       missed beats.
 %
-% Minimum heart rate (bpm). This is just an approximation. 
-% For example, 20 bpm = any gap over 3 s gets an x. 
+% Minimum heart rate (bpm). This is just an approximation.
+% For example, 20 bpm = any gap over 3 s gets an x.
 % Lower it if real slow beats (e.g. deep dives) get x's
 % Raise it to flag shorter gaps.
 
@@ -761,7 +949,7 @@ settings.breakFactor = 1.5;
 settings.breakNeighbors = 5;
 
 % Review window length (s) when the window first opens. Zoom freely after.
-% Really not much of an effect here. 
+% Really not much of an effect here.
 settings.reviewWindowS = 20;
 
 % Snap distance (ms): a new marker is placed on the highest point of the
@@ -787,14 +975,18 @@ settings.clickTolerancePx = 8;
 % continue without updating (e.g. to try a different filter), or stop
 % (e.g. to fix a value that was copied into the script incorrectly).
 recNames = {'Species', 'Deployment', 'settings.rawFile', 'settings.tagOnTime', ...
-    'settings.tagOffTime', 'settings.ecgChannel', 'settings.depthChannel', ...
+    'settings.tagOffTime', 'settings.timeChannel', 'settings.ecgChannel', ...
+    'settings.depthChannel', 'settings.accelX', 'settings.accelY', ...
+    'settings.accelZ', 'settings.sampleRateHz', ...
     'settings.highPassHz', 'settings.lowPassHz', 'settings.filterOrder', ...
     'settings.invertECG', 'settings.minStandOut', 'settings.minSteepness', ...
     'settings.maxWidthMs', 'settings.noiseWindowS', 'settings.maxHR', ...
     'settings.maxRelSize', 'settings.nNeighbors', 'settings.minHR', ...
     'settings.breakFactor', 'settings.breakNeighbors', 'Notes'};
 recVals  = {settings.species, settings.deployment, settings.rawFile, tagOn, ...
-    tagOff, settings.ecgChannel, settings.depthChannel, ...
+    tagOff, settings.timeChannel, settings.ecgChannel, ...
+    settings.depthChannel, settings.accelX, settings.accelY, ...
+    settings.accelZ, settings.sampleRateHz, ...
     settings.highPassHz, settings.lowPassHz, settings.filterOrder, ...
     settings.invertECG, settings.minStandOut, settings.minSteepness, ...
     settings.maxWidthMs, settings.noiseWindowS, settings.maxHR, ...
@@ -919,24 +1111,36 @@ if startFresh
     bCert    = ones(size(bTime));          % all start as certain (red)
     bNoPrior = preplaceBreaks(bTime, settings.minHR, ...
         settings.breakFactor, settings.breakNeighbors);
+    bComment = repmat({''}, numel(bTime), 1);   % no comments yet
     fprintf('Starting review from %d automatic detections (%d pre-placed x''s).\n', ...
         numel(bTime), sum(bNoPrior));
 else
-    saved    = readtable(reviewFile);
+    opts = detectImportOptions(reviewFile);
+    if any(strcmp(opts.VariableNames, 'Comment'))
+        opts = setvartype(opts, 'Comment', 'string');   % read comments as text
+    end
+    saved    = readtable(reviewFile, opts);
     bTime    = saved.Time;
     bCert    = saved.Certainty;
     bNoPrior = saved.NoPriorBeat == 1;
+    if any(strcmp(saved.Properties.VariableNames, 'Comment'))
+        cm = saved.Comment;
+        cm(ismissing(cm)) = "";                         % empty cell = no comment
+        bComment = cellstr(cm);
+    else
+        bComment = repmat({''}, numel(bTime), 1);       % older files: no comments
+    end
     fprintf('Loaded saved review (%d beats): %s\n', numel(bTime), reviewFile);
 end
 
-% ---- Review window: thin depth strip + filtered ECG with markers ----------
+% ---- Review window: acceleration/depth strips + filtered ECG with markers --
 reviewFig  = figure('Name', ['Review: ' settings.deployment], 'NumberTitle', 'off', ...
     'Units', 'normalized', 'Position', [0.05 0.05 0.9 0.85]);
-revAxDepth = axes(reviewFig, 'Position', [0.07 0.76 0.9 0.11]);   % room above for instructions
-revAxECG   = axes(reviewFig, 'Position', [0.07 0.08 0.9 0.65]);
+[stripPos, mainPos] = panelLayout(nStrips, 1, 0.08, 0.87, 0.11, 0.03);   % room above for instructions
+[rStripAx, rStripLines, rStripSigs] = addStrips(reviewFig, stripPos, accNames, hasDepth, data);
+revAxECG = axes(reviewFig, 'Position', mainPos(1, :));
 
-revDepth = plot(revAxDepth, NaN, NaN, 'b');
-revECG   = plot(revAxECG,   NaN, NaN, 'k');
+revECG   = plot(revAxECG, NaN, NaN, 'k');
 hold(revAxECG, 'on');
 revRed   = plot(revAxECG, NaN, NaN, 'o', 'LineStyle', 'none', 'MarkerSize', 7, ...
     'MarkerFaceColor', [0.85 0 0], 'MarkerEdgeColor', [0.85 0 0]);
@@ -944,26 +1148,29 @@ revGreen = plot(revAxECG, NaN, NaN, 'o', 'LineStyle', 'none', 'MarkerSize', 7, .
     'MarkerFaceColor', [0 0.6 0], 'MarkerEdgeColor', [0 0.6 0]);
 revX     = plot(revAxECG, NaN, NaN, 'x', 'LineStyle', 'none', 'MarkerSize', 11, ...
     'LineWidth', 2, 'Color', [0.85 0 0]);
+revRing  = plot(revAxECG, NaN, NaN, 'o', 'LineStyle', 'none', 'MarkerSize', 14, ...
+    'LineWidth', 1.5, 'Color', 'k');               % black ring = beat has a comment
 hold(revAxECG, 'off');
-set([revECG revRed revGreen revX], 'PickableParts', 'none');   % clicks go to the panel itself
+set([revECG revRed revGreen revX revRing], 'PickableParts', 'none');   % clicks go to the panel itself
 revSel = patch(revAxECG, NaN(4, 1), NaN(4, 1), [0.3 0.5 1], ...   % selection band, hidden until used
     'FaceAlpha', 0.2, 'EdgeColor', 'none', 'PickableParts', 'none');
 
-set(revAxDepth, 'YDir', 'reverse');
-ylabel(revAxDepth, 'Depth (m)');
 ylabel(revAxECG, 'Filtered ECG');
 xlabel(revAxECG, 'Time (s)');
-grid(revAxDepth, 'on'); grid(revAxECG, 'on');
-linkaxes([revAxDepth revAxECG], 'x');
-revAxDepth.XTickLabel = {};
-setTimeOnlyNavigation(reviewFig, [revAxDepth revAxECG]);
-revAxDepth.Interactions = [];               % MATLAB's own mouse tools are off here;
-revAxECG.Interactions   = [];               % dragging and scrolling are handled below
-keepYFitted(revAxDepth, revDepth);
+grid(revAxECG, 'on');
+revAll = [rStripAx revAxECG];              % every panel, top to bottom
+linkaxes(revAll, 'x');
+setTimeOnlyNavigation(reviewFig, revAll);
+for a = revAll                             % MATLAB's own mouse tools are off here;
+    a.Interactions = [];                   % dragging and scrolling are handled below
+end
+for s = 1:numel(rStripAx)                  % always refit y to the visible traces
+    keepYFitted(rStripAx(s), rStripLines([rStripLines.Parent] == rStripAx(s)));
+end
 keepYFitted(revAxECG, [revECG revRed revGreen revX]);
 
 % --- Everything the mouse/key functions need, stored inside the figure
-R.axDepth  = revAxDepth;
+R.axTop    = revAll(1);                    % top panel: holds the instructions title
 R.axECG    = revAxECG;
 R.hECG     = revECG;
 R.hRed     = revRed;
@@ -976,9 +1183,13 @@ R.offset   = markerOffset;                 % markers sit just above the peaks
 R.time     = bTime;
 R.cert     = bCert;
 R.noPrior  = bNoPrior;
+R.comment  = bComment;                     % one comment per beat ('' = none)
+R.hRing    = revRing;                      % black rings on commented beats
 R.undo     = {};                           % previous states, for Z (undo)
 R.viewOnly = viewOnly;
 R.file     = reviewFile;
+R.deployment   = settings.deployment;
+R.progressFile = fullfile(paths.root, 'HeartRate_Progress.csv');
 R.snapN    = round(settings.snapMs / 1000 * fs);    % snap distance in samples
 R.tolPx    = settings.clickTolerancePx;
 R.downPos  = [];
@@ -987,33 +1198,42 @@ R.downXLim = [];
 R.downX    = [];                           % time under the pointer when pressed
 R.hSel     = revSel;                       % the selection band
 R.selRange = [];                           % selected time span [start end], empty if none
+R.unsaved  = false;                        % true = edits not yet saved
 reviewFig.UserData = R;
 
-% --- Connect the mouse, keys and Done button
+% --- Connect the mouse, keys and Save buttons
 reviewFig.WindowButtonDownFcn   = @(~, ~) reviewMouseDown(reviewFig);
 reviewFig.WindowButtonMotionFcn = @(~, ~) reviewMouseMove(reviewFig);   % drag to move in time
 reviewFig.WindowButtonUpFcn     = @(~, ~) reviewMouseUp(reviewFig);
 reviewFig.WindowScrollWheelFcn  = @(~, evt) reviewScroll(reviewFig, evt);   % scroll to zoom in time
 reviewFig.WindowKeyPressFcn = @(~, evt) reviewKey(reviewFig, evt);
-uicontrol(reviewFig, 'Style', 'pushbutton', 'String', 'Done', ...
-    'Units', 'normalized', 'Position', [0.89 0.005 0.08 0.04], ...
-    'Callback', @(~, ~) uiresume(reviewFig));
+R = reviewFig.UserData;
+R.hSave = uicontrol(reviewFig, 'Style', 'pushbutton', 'String', 'Save & keep working', ...
+    'Units', 'normalized', 'Position', [0.60 0.005 0.22 0.04], 'FontWeight', 'bold', ...
+    'Callback', @(~, ~) saveReview(reviewFig));
+R.hFinish = uicontrol(reviewFig, 'Style', 'pushbutton', 'String', 'Save & finish', ...
+    'Units', 'normalized', 'Position', [0.83 0.005 0.14 0.04], 'FontWeight', 'bold', ...
+    'BackgroundColor', [0.2 0.45 0.8], 'ForegroundColor', 'w', ...
+    'Callback', @(~, ~) finishReview(reviewFig));
+reviewFig.UserData = R;
+updateSaveButton(reviewFig);
 
 % --- First draw, starting at the beginning of the tag-on period
-sigsRev = {data.Depth, data.ECG_filtered};
+hRevTraces = [rStripLines revECG];         % strip lines, then the ECG (last)
+sigsRev    = [rStripSigs, {data.ECG_filtered}];
 addlistener(revAxECG, 'XLim', 'PostSet', @(~, ~) refreshDetection(revAxECG, ...
-    [revDepth revECG], [revRed revGreen revX], data.Time, sigsRev, fs));
+    hRevTraces, [revRed revGreen revX], data.Time, sigsRev, fs));
 set(revAxECG, 'XLim', [data.Time(1), ...
     min(data.Time(end), data.Time(1) + settings.reviewWindowS)]);
 if startFresh && ~viewOnly
-    afterEdit(reviewFig);                  % applies first-beat x and saves the CSV
+    afterEdit(reviewFig);                  % applies first-beat x; marks as unsaved
 else
     drawReviewMarkers(reviewFig);
 end
 
-reviewFig.CloseRequestFcn = @(~, ~) closeReview(reviewFig);   % closing with X saves first
-uiwait(reviewFig);                         % wait here until Done (or window closed)
-if isvalid(reviewFig), closeReview(reviewFig); end            % Done: save, then close
+reviewFig.CloseRequestFcn = @(~, ~) closeReview(reviewFig);   % X: asks to save if needed
+uiwait(reviewFig);                         % wait here until the window closes
+if isvalid(reviewFig), closeReview(reviewFig); end
 if isfile(reviewFile)
     heartbeats = readtable(reviewFile);    % the final datasheet, for later steps
     fprintf('Review closed. %d beats in: %s\n', height(heartbeats), reviewFile);
@@ -1067,21 +1287,21 @@ function setTagTime(overviewFig, which)
 S = overviewFig.UserData;
 zoom(overviewFig, 'off');                 % turn off zoom/pan so the click registers
 pan(overviewFig, 'off');
-title(S.axDepth, sprintf('Click on the plot to set TAG %s', upper(which)));
+title(S.axTop, sprintf('Click on the plot to set TAG %s', upper(which)));
 [x, ~] = ginput(1);                       % wait for one click
 i = round((x - S.t(1)) * S.fs) + 1;       % snap to the nearest sample
 i = min(max(i, 1), numel(S.t));
 S.(['tag' which]) = S.t(i);               % stores in S.tagOn or S.tagOff
 overviewFig.UserData = S;
 drawTagLines(overviewFig);
-title(S.axDepth, 'Zoom/pan to find tag on/off, then use the buttons below');
+title(S.axTop, 'Zoom/pan to find tag on/off, then use the buttons below');
 end
 
 function drawTagLines(overviewFig)
-% Draws green (tag on) and red (tag off) vertical lines on both panels.
+% Draws green (tag on) and red (tag off) vertical lines on every panel.
 S = overviewFig.UserData;
 delete(findobj(overviewFig, 'Tag', 'tagLine'));   % remove old lines
-for ax = [S.axDepth, S.axECG]
+for ax = S.axAll
     if ~isempty(S.tagOn)
         xline(ax, S.tagOn, '-', 'Tag on', 'Color', [0 0.6 0], ...
             'LineWidth', 1.5, 'Tag', 'tagLine');
@@ -1140,7 +1360,10 @@ nPix = max(100, round(pos(3)));
 for k = 1:numel(hLines)
     [tt, yy] = minMaxDecimate(t(i1:i2), signals{k}(i1:i2), nPix);
     set(hLines(k), 'XData', tt, 'YData', yy);
-    fitYAxis(hLines(k).Parent, yy);       % fit this panel to what is visible
+end
+for k = 1:numel(hLines)                   % fit each panel to ALL of its lines
+    axk = hLines(k).Parent;               % (a panel can hold several, e.g. X/Y/Z)
+    fitToVisible(axk, hLines([hLines.Parent] == axk));
 end
 end
 
@@ -1256,7 +1479,7 @@ if xc < ax.XLim(1) || xc > ax.XLim(2) || yc < ax.YLim(1) || yc > ax.YLim(2)
     return                                              % outside the ECG panel
 end
 
-R.undo{end + 1} = {R.time, R.cert, R.noPrior};          % remember state for undo
+R.undo{end + 1} = {R.time, R.cert, R.noPrior, R.comment};   % remember state for undo
 if numel(R.undo) > 200, R.undo(1) = []; end
 
 pos = getpixelposition(ax);
@@ -1264,7 +1487,7 @@ tol = R.tolPx * diff(ax.XLim) / pos(3);                 % click tolerance in sec
 [dist, k] = min(abs(R.time - xc));                      % nearest marker
 if ~isempty(dist) && dist <= tol
     % --- Clicked ON a marker: remove it
-    R.time(k) = [];  R.cert(k) = [];  R.noPrior(k) = [];
+    R.time(k) = [];  R.cert(k) = [];  R.noPrior(k) = [];  R.comment(k) = [];
 else
     % --- Clicked on empty space: add a marker at the nearby peak
     i0 = round((xc - R.t(1)) * R.fs) + 1;               % clicked sample
@@ -1285,9 +1508,11 @@ else
     R.time    = [R.time; newT];
     R.cert    = [R.cert; c];
     R.noPrior = [R.noPrior; np];
+    R.comment = [R.comment; {''}];                      % new beat: no comment
     [R.time, order] = sort(R.time);                     % keep beats in time order
     R.cert    = R.cert(order);
     R.noPrior = R.noPrior(order);
+    R.comment = R.comment(order);
 end
 fig.UserData = R;
 afterEdit(fig);
@@ -1305,7 +1530,7 @@ switch evt.Key
         newLim = ax.XLim - 0.8 * span;
     case 'z'
         if R.viewOnly || isempty(R.undo), return; end
-        [R.time, R.cert, R.noPrior] = deal(R.undo{end}{:});   % restore previous state
+        [R.time, R.cert, R.noPrior, R.comment] = deal(R.undo{end}{:});   % restore previous state
         R.undo(end) = [];
         fig.UserData = R;
         afterEdit(fig);
@@ -1314,15 +1539,19 @@ switch evt.Key
         if R.viewOnly || isempty(R.selRange), return; end
         inSel = R.time >= R.selRange(1) & R.time <= R.selRange(2);   % markers in the span
         if any(inSel)
-            R.undo{end + 1} = {R.time, R.cert, R.noPrior};           % one undo step
+            R.undo{end + 1} = {R.time, R.cert, R.noPrior, R.comment};   % one undo step
             if numel(R.undo) > 200, R.undo(1) = []; end
             R.time(inSel) = [];  R.cert(inSel) = [];  R.noPrior(inSel) = [];
+            R.comment(inSel) = [];
             nextBeat = find(R.time > R.selRange(2), 1);              % first beat after the span
             if ~isempty(nextBeat), R.noPrior(nextBeat) = true; end   % becomes an x
         end
         R.selRange = [];
         fig.UserData = R;
-        afterEdit(fig);                                              % save and redraw
+        afterEdit(fig);                                              % redraw (button turns orange)
+        return
+    case 'c'
+        editComment(fig);                                    % comment on the beat under the pointer
         return
     case 'escape'
         R.selRange = [];
@@ -1339,43 +1568,79 @@ ax.XLim = newLim;
 end
 
 function afterEdit(fig)
-% Runs after every change: first beat is always an x, then save and redraw.
+% Runs after every change: the first beat is always an x, the Save button
+% turns orange (unsaved changes), and the markers are redrawn.
 R = fig.UserData;
 if ~isempty(R.noPrior), R.noPrior(1) = true; end
+R.unsaved = true;
 fig.UserData = R;
-saveReview(fig);
+updateSaveButton(fig);
 drawReviewMarkers(fig);
 end
 
-function saveReview(fig)
-% Writes the heartbeat datasheet (CSV) unless in view-only mode. If the file
-% cannot be written (usually because it is open in Excel), a warning is shown
-% and the edits are kept in the window; they are saved with the next edit,
-% or when the window is closed.
-R = fig.UserData;
+function ok = saveReview(fig)
+% Writes the heartbeat datasheet (CSV). Returns true if it was saved. If
+% the file cannot be written (usually because it is open in Excel), a
+% warning is shown and the edits stay in the window.
+R  = fig.UserData;
+ok = false;
 if R.viewOnly, return; end
 try
-    writetable(buildHeartbeatTable(R.time, R.cert, R.noPrior), R.file);
+    writetable(buildHeartbeatTable(R.time, R.cert, R.noPrior, R.comment), R.file);
 catch
-    msg = sprintf(['Could not save:\n%s\n\nIs it open in Excel? Close it there.\n' ...
-        'Your edits are kept and will be saved with your next edit.'], R.file);
+    msg = sprintf(['Could not save:\n%s\n\nIs it open in Excel? Close it there, ' ...
+        'then click Save again.\nYour edits are kept in the window.'], R.file);
     fprintf(2, '%s\n', msg);               % red text in the Command Window
     warndlg(msg, 'Could not save', 'modal');
+    return
 end
+ok = true;
+R.unsaved = false;
+fig.UserData = R;
+updateSaveButton(fig);
+fprintf('Saved %d beats to %s\n', numel(R.time), R.file);
+printSegmentSummary(R.time, R.noPrior, R.t(end) - R.t(1));
 end
 
-function T = buildHeartbeatTable(time, cert, noPrior)
+function closeReview(fig)
+% Runs when the window's X is clicked. If there are unsaved changes, asks
+% whether to save them first.
+R = fig.UserData;
+if ~R.viewOnly && R.unsaved
+    closeChoice = questdlg('There are unsaved changes. Save them before closing?', ...
+        'Unsaved changes', 'Save', 'Close without saving', 'Cancel', 'Save');
+    switch closeChoice
+        case 'Save'
+            if ~saveReview(fig), return; end   % save failed: keep the window open
+        case 'Close without saving'
+            % unsaved edits are discarded
+        otherwise                              % Cancel, or the popup was closed
+            return
+    end
+end
+delete(fig);
+end
+
+function T = buildHeartbeatTable(time, cert, noPrior, comment)
 % The final datasheet: one row per beat.
 %   RRInterval = time since the previous beat (s); NaN for x's
 %   HeartRate  = 60 / RRInterval (bpm);          NaN for x's
+%   Segment    = 1, 2, 3, ...: a new segment starts at every x, so each
+%                segment is a stretch of beats with no known gap in it
+%   Comment    = the beat's comment (empty if none)
 if isempty(time)
-    rr = zeros(0, 1);
+    rr  = zeros(0, 1);
+    seg = zeros(0, 1);
 else
     rr = [NaN; diff(time)];
     rr(noPrior) = NaN;
+    np = noPrior(:);
+    np(1) = true;                          % the first beat always starts segment 1
+    seg = cumsum(np);                      % +1 at every x
 end
-T = table(time, cert, double(noPrior), rr, 60 ./ rr, ...
-    'VariableNames', {'Time', 'Certainty', 'NoPriorBeat', 'RRInterval', 'HeartRate'});
+T = table(time, cert, double(noPrior), rr, 60 ./ rr, seg, comment(:), ...
+    'VariableNames', {'Time', 'Certainty', 'NoPriorBeat', 'RRInterval', ...
+    'HeartRate', 'Segment', 'Comment'});
 end
 
 function drawReviewMarkers(fig)
@@ -1391,6 +1656,8 @@ isGreen = ~isX & R.cert == 2;
 set(R.hRed,   'XData', R.time(isRed),   'YData', y(isRed));
 set(R.hGreen, 'XData', R.time(isGreen), 'YData', y(isGreen));
 set(R.hX,     'XData', R.time(isX),     'YData', y(isX));
+hasComment = ~cellfun('isempty', R.comment);            % beats with a comment
+set(R.hRing,  'XData', R.time(hasComment), 'YData', y(hasComment));
 reviewTitleAndBand(fig);
 fitToVisible(R.axECG, [R.hECG R.hRed R.hGreen R.hX]);
 end
@@ -1467,21 +1734,21 @@ isX     = R.noPrior;
 isRed   = ~isX & R.cert == 1;
 isGreen = ~isX & R.cert == 2;
 if R.viewOnly
-    line1 = 'VIEW ONLY - editing is switched off';
-    line2 = 'Drag / scroll: move / zoom in time   |   Left / right arrows: move';
+    line1 = '\bfVIEW ONLY\rm - editing is switched off';
+    line2 = '\bfDrag / scroll:\rm move / zoom in time   |   \bfLeft / right arrows:\rm move';
 else
-    line1 = ['Click: add red beat   |   Shift+click: add green (possible)   |   ' ...
-        'Ctrl+click: add red x (no prior beat)   |   Click a marker: remove'];
-    line2 = ['Drag / scroll: move / zoom   |   Shift+drag: select a span   |   ' ...
-        'Arrows: move   |   Z: undo   |   Edits save automatically'];
+    line1 = ['\bfClick:\rm add red beat   |   \bfShift+click:\rm add green (possible)   |   ' ...
+        '\bfCtrl+click:\rm add red x (no prior beat)   |   \bfClick a marker:\rm remove'];
+    line2 = ['\bfDrag / scroll:\rm move / zoom   |   \bfShift+drag:\rm select a span   |   ' ...
+        '\bfArrows:\rm move   |   \bfZ:\rm undo   |   \bfC\rm (pointer over a marker): comment'];
 end
 counts = sprintf('Beats: %d   (red %d   |   green %d   |   x %d)', ...
     numel(R.time), sum(isRed), sum(isGreen), sum(isX));
 if ~isempty(R.selRange)
     nSel   = sum(R.time >= R.selRange(1) & R.time <= R.selRange(2));
-    counts = [counts sprintf('      >>  %d selected: Delete to remove, Esc to cancel', nSel)];
+    counts = [counts sprintf('      >>  %d selected: \\bfDelete\\rm to remove, \\bfEsc\\rm to cancel', nSel)];
 end
-title(R.axDepth, {line1, line2, counts}, 'FontWeight', 'normal');
+title(R.axTop, {line1, line2, counts}, 'FontWeight', 'normal');
 end
 
 function txt = settingToText(v)
@@ -1508,9 +1775,300 @@ txt = strrep(strtrim(txt), ',', ';');
 end
 
 
-function closeReview(fig)
-% Saves one last time (in case an earlier save failed), then closes the
-% review window.
-saveReview(fig);
+function fields = splitFields(line, sepChar)
+% Splits one line of the raw file into its fields. sepChar is a tab or a
+% comma; empty means "separated by one or more spaces".
+if isempty(sepChar)
+    fields = regexp(strtrim(line), '\s+', 'split');
+else
+    fields = strtrim(strsplit(line, sepChar));
+end
+end
+
+function idx = findColumn(spec, names, nCols, settingName)
+% Turns a column setting (a name in quotes, or a column number) into a
+% column number. Empty ([] or '') returns 0, meaning "no such column".
+if isempty(spec)
+    idx = 0;
+elseif isnumeric(spec)
+    idx = spec(1);
+    if idx < 1 || idx > nCols || idx ~= round(idx)
+        error('%s = %g, but the file has %d columns.', settingName, idx, nCols);
+    end
+else
+    spec = char(spec);
+    if isempty(names)
+        error(['%s = ''%s'', but this file has no column names. Use a column ' ...
+            'number instead (counting from the left, 1 = first column).'], ...
+            settingName, spec);
+    end
+    idx = find(strcmp(names, spec), 1);
+    if isempty(idx)
+        list = arrayfun(@(i) sprintf('%d = %s', i, names{i}), 1:numel(names), ...
+            'UniformOutput', false);
+        error('%s = ''%s'' was not found. Columns in this file:\n  %s', ...
+            settingName, spec, strjoin(list, '\n  '));
+    end
+end
+end
+
+function txt = describeColumn(label, idx, names)
+% Text such as 'ECG = column 2 (ECG)' for the import summary.
+if idx == 0 && strcmp(label, 'Time')
+    txt = 'Time = none (built from settings.sampleRateHz)';
+elseif idx == 0
+    txt = sprintf('%s = none (not in this file)', label);
+elseif idx <= numel(names)
+    txt = sprintf('%s = column %d (%s)', label, idx, names{idx});
+else
+    txt = sprintf('%s = column %d', label, idx);
+end
+end
+
+function printSegmentSummary(time, noPrior, tagOnDuration)
+% Prints how the beats split into segments (a segment starts at each x and
+% runs to the beat before the next x), and how much of the tag-on period
+% the segments cover (from each segment's first beat to its last).
+if isempty(time), return; end
+np = noPrior(:);
+np(1) = true;
+seg    = cumsum(np);
+segDur = accumarray(seg, time(:), [], @(v) max(v) - min(v));   % seconds per segment
+fprintf(['Segments: %d | median length %.1f min | beats cover %.0f%% of ' ...
+    'the tag-on period\n'], max(seg), median(segDur) / 60, ...
+    100 * sum(segDur) / tagOnDuration);
+end
+
+
+function editComment(fig)
+% C key: add, edit or remove the comment on the marker nearest the mouse
+% pointer. An empty comment removes it; Cancel changes nothing.
+R = fig.UserData;
+if R.viewOnly || isempty(R.time), return; end
+ax = R.axECG;
+cp = ax.CurrentPoint;
+xc = cp(1, 1);                                     % time under the pointer
+if xc < ax.XLim(1) || xc > ax.XLim(2), return; end
+pos = getpixelposition(ax);
+tol = 2 * R.tolPx * diff(ax.XLim) / pos(3);        % a little more generous than clicking
+[dist, k] = min(abs(R.time - xc));                 % nearest marker
+if dist > tol
+    fprintf('To comment, hover the pointer over a marker, then press C.\n');
+    return
+end
+answer = inputdlg(sprintf('Comment for the beat at %.3f s (leave empty to remove):', ...
+    R.time(k)), 'Beat comment', [1 70], R.comment(k));
+if isempty(answer), return; end                    % Cancel: no change
+newComment = strtrim(answer{1});
+if strcmp(newComment, R.comment{k}), return; end   % unchanged
+R.undo{end + 1} = {R.time, R.cert, R.noPrior, R.comment};   % Z can undo it
+if numel(R.undo) > 200, R.undo(1) = []; end
+R.comment{k} = newComment;
+fig.UserData = R;
+afterEdit(fig);
+end
+
+
+function updateSaveButton(fig)
+% Colours the Save button: orange = unsaved changes, green = all saved.
+% In view-only mode there is nothing to save, so only Close is shown.
+R = fig.UserData;
+if R.viewOnly
+    set(R.hSave, 'Visible', 'off');
+    set(R.hFinish, 'String', 'Close');
+    return
+end
+if R.unsaved
+    set(R.hSave, 'String', 'Save & keep working (unsaved changes)', ...
+        'BackgroundColor', [1 0.6 0.2]);
+else
+    set(R.hSave, 'String', 'Save & keep working (all saved)', ...
+        'BackgroundColor', [0.45 0.8 0.45]);
+end
+end
+
+function finishReview(fig)
+% Save & finish: saves, records progress in HeartRate_Progress.csv, and
+% closes the window. If the save fails, the window stays open.
+R = fig.UserData;
+if R.viewOnly
+    delete(fig);
+    return
+end
+if ~saveReview(fig), return; end
+logProgress(fig);
 delete(fig);
+end
+
+function logProgress(fig)
+% After Save & finish: asks who worked on this deployment, how far they got
+% and for an optional comment, then records it in HeartRate_Progress.csv in
+% the project folder (one row per deployment; first pass and review have
+% their own columns). Comments are never overwritten: each new one is added
+% to the end of the Comments column as "date name (role): comment", with
+% semicolons between comments.
+R = fig.UserData;
+role = questdlg('Record this session in the progress sheet as:', ...
+    'Progress', 'First pass', 'Review', 'Skip', 'First pass');
+if ~any(strcmp(role, {'First pass', 'Review'})), return; end   % Skip, or closed
+
+checkpoint = R.axECG.XLim(2);              % right edge of the current view
+answer = inputdlg({'Your name:', ...
+    'Checkpoint time (s): how far through the deployment you worked', ...
+    'Comments (optional):'}, ...
+    ['Progress: ' role], [1 60], {'', sprintf('%.0f', checkpoint), ''});
+if isempty(answer), return; end            % Cancel: nothing recorded
+complete = questdlg(sprintf('Is the %s of this deployment complete?', lower(role)), ...
+    'Complete?', 'Yes', 'No', 'No');
+if isempty(complete), complete = 'No'; end
+
+cols = {'Deployment', 'ProcessedBy', 'ProcessedDate', 'CheckpointTime', ...
+    'FirstPassComplete', 'ReviewedBy', 'ReviewDate', 'ReviewCheckpointTime', ...
+    'ReviewComplete', 'Comments'};
+dateStr = char(datetime('today', 'Format', 'yyyy-MM-dd'));
+vals = cellfun(@settingToText, {answer{1}, dateStr, answer{2}, complete}, ...
+    'UniformOutput', false);               % trims spaces; commas -> semicolons
+
+% --- Existing sheet, matched by column name
+rows = cell(0, numel(cols));
+if isfile(R.progressFile)
+    old = readcell(R.progressFile, 'Delimiter', ',');
+    old = cellfun(@settingToText, old, 'UniformOutput', false);
+    for r = 2:size(old, 1)
+        row = repmat({''}, 1, numel(cols));
+        for c = 1:numel(cols)
+            col = find(strcmp(old(1, :), cols{c}), 1);
+            if ~isempty(col), row{c} = old{r, col}; end
+        end
+        rows(end + 1, :) = row;            %#ok<AGROW>
+    end
+end
+
+% --- Update this deployment's row (add it if new)
+k = find(strcmp(rows(:, 1), R.deployment), 1);
+if isempty(k)
+    rows(end + 1, :) = repmat({''}, 1, numel(cols));
+    k = size(rows, 1);
+    rows{k, 1} = R.deployment;
+end
+if strcmp(role, 'First pass')
+    rows(k, 2:5) = vals;                   % ProcessedBy ... FirstPassComplete
+else
+    rows(k, 6:9) = vals;                   % ReviewedBy ... ReviewComplete
+end
+newComment = settingToText(answer{3});    % trims spaces; commas -> semicolons
+if ~isempty(newComment)
+    entry = sprintf('%s %s (%s): %s', dateStr, vals{1}, role, newComment);
+    if isempty(rows{k, 10})                % column 10 = Comments
+        rows{k, 10} = entry;               % first comment for this deployment
+    else
+        rows{k, 10} = [rows{k, 10} '; ' entry];   % add to the end, keep the rest
+    end
+end
+[~, order] = sort(lower(rows(:, 1)));      % deployments in alphabetical order
+rows = rows(order, :);
+
+% --- Write, with a retry if the sheet is open in Excel
+while true
+    try
+        writecell([cols; rows], R.progressFile);
+        fprintf('Progress recorded in: %s\n', R.progressFile);
+        return
+    catch
+        retryChoice = questdlg(sprintf(['Could not write:\n%s\n\nIs it open in ' ...
+            'Excel? Close it there, then click Retry.'], R.progressFile), ...
+            'Could not save progress', 'Retry', 'Skip', 'Retry');
+        if ~strcmp(retryChoice, 'Retry')
+            fprintf(2, 'Progress was NOT recorded.\n');
+            return
+        end
+    end
+end
+end
+
+function [stripPos, mainPos] = panelLayout(nStrips, nMain, bottom, top, stripH, gap)
+% Works out where each panel goes in a window: nStrips thin strips at the
+% top (acceleration, depth) above nMain ECG panels, all the same width.
+% Each position is [left bottom width height], as fractions of the window.
+%   nStrips : 0, 1 or 2 thin strips (top to bottom: acceleration, depth)
+%   nMain   : number of ECG panels below them (1, or 2 in the filter check)
+%   bottom  : lowest edge of the bottom panel (room for time labels/buttons)
+%   top     : highest edge of the top panel (room for the title above)
+%   stripH  : height of a strip when there is only one
+%   gap     : space between the strips and the ECG panel(s)
+% With one strip, sizes are exactly those used before acceleration was
+% added. With two strips, each strip is 80% as tall and the ECG panels are
+% a little shorter, so everything fits. With none, ECG fills the space.
+left = 0.07;  width = 0.9;
+stripGap = 0.015;                          % space between two strips
+mainGap  = 0.02;                           % space between two ECG panels
+if nStrips == 2
+    h = 0.8 * stripH;                      % two strips: each a bit thinner
+else
+    h = stripH;
+end
+
+stripPos = zeros(nStrips, 4);
+y = top;
+for s = 1:nStrips                          % strips, from the top down
+    y = y - h;
+    stripPos(s, :) = [left y width h];
+    y = y - stripGap;
+end
+if nStrips > 0
+    mainTop = y + stripGap - gap;          % below the last strip, plus the gap
+else
+    mainTop = top;                         % no strips: ECG starts at the top
+end
+
+mainH   = (mainTop - bottom - (nMain - 1) * mainGap) / nMain;
+mainPos = zeros(nMain, 4);
+for m = 1:nMain                            % ECG panels, from the top down
+    mainPos(m, :) = [left, mainTop - m * mainH - (m - 1) * mainGap, width, mainH];
+end
+end
+
+
+function [stripAx, stripLines, stripSigs] = addStrips(fig, stripPos, accNames, hasDepth, data)
+% Creates the thin strips at the top of a window, from the top down:
+% acceleration (one coloured line per axis in use) and/or depth. Returns
+% the strip panels, their lines and the matching data columns, ready for
+% refreshTraces (the lines start empty; refreshTraces fills them).
+%   stripPos : strip positions from panelLayout (one row per strip)
+%   accNames : acceleration columns in use, e.g. {'AccX','AccY','AccZ'}
+%   hasDepth : true if a depth strip should be shown
+accColors = struct('AccX', [0.85 0.33 0.10], ...   % X: orange
+    'AccY', [0.47 0.67 0.19], ...   % Y: green
+    'AccZ', [0.49 0.18 0.56]);      % Z: purple
+stripAx    = gobjects(0);
+stripLines = gobjects(0);
+stripSigs  = {};
+s = 0;                                     % strips made so far
+if ~isempty(accNames)
+    s  = s + 1;
+    ax = axes(fig, 'Position', stripPos(s, :));
+    hold(ax, 'on');
+    labelParts = cell(1, numel(accNames));
+    for a = 1:numel(accNames)
+        c = accColors.(accNames{a});
+        stripLines(end + 1) = plot(ax, NaN, NaN, 'Color', c);   %#ok<AGROW>
+        stripSigs{end + 1}  = data.(accNames{a});               %#ok<AGROW>
+        labelParts{a} = sprintf('\\color[rgb]{%g %g %g}%s', c, accNames{a}(end));
+    end
+    hold(ax, 'off');
+    ylabel(ax, {'Accel', strjoin(labelParts, ' ')});   % 'X Y Z' in the line colours
+    grid(ax, 'on');
+    stripAx(end + 1) = ax;
+end
+if hasDepth
+    s  = s + 1;
+    ax = axes(fig, 'Position', stripPos(s, :));
+    stripLines(end + 1) = plot(ax, NaN, NaN, 'b');
+    stripSigs{end + 1}  = data.Depth;
+    set(ax, 'YDir', 'reverse');            % deeper = lower on the plot
+    ylabel(ax, 'Depth (m)');
+    grid(ax, 'on');
+    stripAx(end + 1) = ax;
+end
+set(stripAx, 'XTickLabel', {});            % time labels only on the bottom panel
 end
