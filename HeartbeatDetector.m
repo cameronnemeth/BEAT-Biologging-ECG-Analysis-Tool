@@ -1,7 +1,24 @@
 %% HeartbeatDetector.m
 % Semi-automated R-wave detection and interactive review for ECG tag data
 %
-% Version 3.1
+% CHANGES IN VERSION 3.3 (31-10-2026)
+%   - Fixed: HeartRate_Progress.csv lost the ProcessedDate / ReviewDate of
+%     other deployments whenever a new session was recorded. Sheets are now
+%     read with dates kept as text, so existing dates are preserved.
+%   - Clearer Command Window message after clicking tag on/off: the times
+%     are saved automatically to the settings sheets when the review opens;
+%     pasting them into SETTINGS is optional (avoids clicking next time).
+%   - New sheet HeartRate_Deployment_Information.csv in the project folder:
+%     one row per deployment, refreshed after every save (and again after
+%     the progress popup at Save & finish). Columns: Deployment, Species,
+%     Complete (from the progress sheet), tag on/off (s) and duration (h),
+%     numbers of heartbeats (all / certain / possible), segments and RR
+%     intervals; segment duration (min) and beats per segment (mean,
+%     median, SD); PercentCleanECG (total segment duration / tag-on
+%     duration x 100); heart rate (bpm: mean, median, SD); LastUpdated;
+%     Comments (copied from the progress sheet). Sorted by Deployment.
+%   - Older deployments get a row the next time they are saved (Continue
+%     review, then Save & keep working; no edits needed).
 %
 % Created by: Cameron Nemeth, with Claude
 % Email: ncnemeth@hawaii.edu
@@ -58,6 +75,12 @@
 %            (checkpoint time) and whether each stage is complete, plus a
 %            Comments column that keeps every note added (date, name and
 %            role first; notes separated by semicolons).
+%        HeartRate_Deployment_Information.csv (in the project folder)
+%            One row per deployment, refreshed every time the review is
+%            saved: tag on/off and duration, numbers of beats, segments and
+%            RR intervals, segment lengths, beats per segment, % of the
+%            tag-on period with clean ECG, heart rate (mean, median, SD),
+%            status (from the progress sheet) and the progress comments.
 %
 %
 % All paths are built relative to this script's location, so the whole
@@ -78,14 +101,14 @@
 clear; clc; close all;
 
 settings.species    = 'Loggerhead Turtle';          % Species. This is recorded in the settings sheets
-settings.deployment = '21-Oct-2026-Frankie-2-suction-cups-';      % Folder name inside project
-settings.rawFile    = 'ecg_temp_depth_new-frankei oct 21-2026.txt';  % raw data text export, .txt or .csv
+settings.deployment = '6-Oct-2026-Nando-1suctioncup';      % Folder name inside project
+settings.rawFile    = 'SevillaTurtle_06102026.txt';  % raw data text export, .txt or .csv
 
 % Tag on/off times, in seconds from the start of the recording.
 % If known, enter them here. If left empty [], you will click them
 % on the overview plot.
-settings.tagOnTime  = [550];
-settings.tagOffTime = [15600];
+settings.tagOnTime  = [0.184];
+settings.tagOffTime = [23261.64];
 
 % Columns to use. Give each one EITHER as a NAME in quotes, exactly as it
 % is written in the file, OR as a column NUMBER, counting the columns of
@@ -100,8 +123,8 @@ settings.tagOffTime = [15600];
 % Depth is optional: if the file has no depth, set depthChannel = []. The
 % depth strips in the windows are then left empty; nothing else changes.
 settings.timeChannel  = 1;        % time column (seconds), or [] if the file has none
-settings.ecgChannel   = 'ECG';         % raw ECG values
-settings.depthChannel = 'Depth (m)';   % depth values, or [] if the file has none
+settings.ecgChannel   = 'ecg';         % raw ECG values
+settings.depthChannel = 'depth';   % depth values, or [] if the file has none
 
 % Acceleration (optional): one setting per axis, each a column name or
 %   number, or [] if that axis is not in the file. Fill in all three for a
@@ -121,7 +144,7 @@ settings.sampleRateHz = [];
 
 % Notes for this deployment, saved in the settings sheets (e.g. 'ECG shifted
 % 17 s in LabChart to align with CATS depth'). Leave as '' if none.
-settings.notes = 'Temperature might actually be depth. think it was swapped.';
+settings.notes = '';
 
 %% ---- PATHS (no editing needed) --------------------------------------
 % Find the project folder (MATLAB's version of R's here()): the folder that
@@ -579,7 +602,7 @@ settings.filterOrder = 4;
 % Invert ECG: set to true if R waves point DOWNWARD on this tag. The script
 %   prints a suggestion each run. Only the filtered copy used for detection
 %   is flipped; the raw ECG is never changed.
-settings.invertECG = false;
+settings.invertECG = true;
 
 % THIS CAN JUST STAY TRUE
 % False just skips the figure pane for this filtering step.
@@ -720,7 +743,7 @@ settings.noiseWindowS = 3;
 % Maximum heart rate (bpm): two beats can never be closer together than
 %   this allows (120 bpm = 0.5 s). If two peaks are closer, only the one
 %   that stands out most is kept.
-settings.maxHR = 20;
+settings.maxHR = 60;
 
 
 % Oversized-peak filter (removes e.g. surfacing artifacts): a detected beat
@@ -948,6 +971,9 @@ settings.breakFactor = 1.5;
 %   Typical: 3-10.
 settings.breakNeighbors = 5;
 
+% Personal settings below here. These just affect the way you interact with
+% the window. 
+
 % Review window length (s) when the window first opens. Zoom freely after.
 % Really not much of an effect here.
 settings.reviewWindowS = 20;
@@ -1000,7 +1026,7 @@ referenceFile = fullfile(paths.root, 'HeartRate_Reference_Settings.csv');
 % --- Compare with this deployment's existing sheet, if there is one
 recordSettings = true;                     % false = leave both sheets untouched this run
 if isfile(settingsFile)
-    old       = readcell(settingsFile, 'Delimiter', ',');
+    old       = readcell(settingsFile, 'Delimiter', ',', 'DatetimeType', 'text');   % keep dates as text
     oldHeader = cellfun(@settingToText, old(1, :), 'UniformOutput', false);
     diffs     = {};
     for c = 1:numel(recNames)
@@ -1051,7 +1077,7 @@ if recordSettings
     % --- Update the reference sheet: replace or add this deployment's row, then sort
     refRows = cell(0, numel(recNames));
     if isfile(referenceFile)
-        ref       = readcell(referenceFile, 'Delimiter', ',');
+        ref       = readcell(referenceFile, 'Delimiter', ',', 'DatetimeType', 'text');   % keep dates as text
         ref       = cellfun(@settingToText, ref, 'UniformOutput', false);
         refHeader = ref(1, :);
         for r = 2:size(ref, 1)                         % match columns by name
@@ -1190,6 +1216,10 @@ R.viewOnly = viewOnly;
 R.file     = reviewFile;
 R.deployment   = settings.deployment;
 R.progressFile = fullfile(paths.root, 'HeartRate_Progress.csv');
+R.infoFile     = fullfile(paths.root, 'HeartRate_Deployment_Information.csv');
+R.species      = settings.species;
+R.tagOn        = tagOn;                    % tag times actually used (typed or clicked)
+R.tagOff       = tagOff;
 R.snapN    = round(settings.snapMs / 1000 * fs);    % snap distance in samples
 R.tolPx    = settings.clickTolerancePx;
 R.downPos  = [];
@@ -1600,6 +1630,7 @@ fig.UserData = R;
 updateSaveButton(fig);
 fprintf('Saved %d beats to %s\n', numel(R.time), R.file);
 printSegmentSummary(R.time, R.noPrior, R.t(end) - R.t(1));
+updateDeploymentInfo(fig);                 % refresh HeartRate_Deployment_Information.csv
 end
 
 function closeReview(fig)
@@ -1766,6 +1797,8 @@ elseif isnumeric(v)
     if isnan(v(1)), txt = ''; else, txt = sprintf('%.10g', v(1)); end
 elseif isstring(v)
     if ismissing(v(1)), txt = ''; else, txt = char(v(1)); end
+elseif isdatetime(v)                       % a date read from a sheet: keep it as text
+    if isnat(v(1)), txt = ''; else, txt = char(v(1), 'yyyy-MM-dd'); end
 elseif ischar(v)
     txt = v;
 else
@@ -1897,6 +1930,7 @@ if R.viewOnly
 end
 if ~saveReview(fig), return; end
 logProgress(fig);
+updateDeploymentInfo(fig);                 % again, so status and comments are current
 delete(fig);
 end
 
@@ -1932,7 +1966,7 @@ vals = cellfun(@settingToText, {answer{1}, dateStr, answer{2}, complete}, ...
 % --- Existing sheet, matched by column name
 rows = cell(0, numel(cols));
 if isfile(R.progressFile)
-    old = readcell(R.progressFile, 'Delimiter', ',');
+    old = readcell(R.progressFile, 'Delimiter', ',', 'DatetimeType', 'text');   % keep dates as text
     old = cellfun(@settingToText, old, 'UniformOutput', false);
     for r = 2:size(old, 1)
         row = repmat({''}, 1, numel(cols));
@@ -2071,4 +2105,114 @@ if hasDepth
     stripAx(end + 1) = ax;
 end
 set(stripAx, 'XTickLabel', {});            % time labels only on the bottom panel
+end
+
+
+function updateDeploymentInfo(fig)
+% Refreshes this deployment's row in HeartRate_Deployment_Information.csv
+% (project folder): summary numbers from the beats just saved, plus the
+% status and comments from HeartRate_Progress.csv. One row per deployment,
+% sorted alphabetically by Deployment. Runs after every successful save.
+% If the sheet cannot be written (e.g. it is open in Excel), a warning is
+% printed; the heartbeat file itself has already been saved.
+R = fig.UserData;
+
+% --- Summary numbers from the beats in the window (= the file just saved)
+time   = R.time(:);
+cert   = R.cert(:);
+np     = logical(R.noPrior(:));
+nBeats = numel(time);
+if nBeats > 0
+    np(1)    = true;                       % the first beat always starts segment 1
+    seg      = cumsum(np);                 % segment number of each beat
+    segDurS  = accumarray(seg, time, [], @(v) max(v) - min(v));   % seconds per segment
+    segBeats = accumarray(seg, 1);         % beats per segment
+    rr       = [NaN; diff(time)];
+    rr(np)   = NaN;                        % no RR interval for x's
+    hr       = 60 ./ rr(~isnan(rr));       % heart rate of each usable interval (bpm)
+else
+    segDurS = zeros(0, 1);  segBeats = zeros(0, 1);  hr = zeros(0, 1);
+end
+tagOnDur = R.tagOff - R.tagOn;             % tag-on period (s)
+segMin   = segDurS / 60;                   % segment durations in minutes
+
+% --- Status and comments, from this deployment's row in the progress sheet
+status   = 'In progress';
+comments = '';
+if isfile(R.progressFile)
+    prog = readcell(R.progressFile, 'Delimiter', ',', 'DatetimeType', 'text');
+    prog = cellfun(@settingToText, prog, 'UniformOutput', false);
+    hdr  = prog(1, :);
+    dCol = find(strcmp(hdr, 'Deployment'), 1);
+    r    = [];
+    if ~isempty(dCol)
+        r = find(strcmp(prog(2:end, dCol), R.deployment), 1) + 1;   % row in the sheet
+    end
+    if ~isempty(r)
+        fpCol  = find(strcmp(hdr, 'FirstPassComplete'), 1);
+        revCol = find(strcmp(hdr, 'ReviewComplete'), 1);
+        cmCol  = find(strcmp(hdr, 'Comments'), 1);
+        if ~isempty(revCol) && strcmpi(prog{r, revCol}, 'Yes')
+            status = 'Review complete';
+        elseif ~isempty(fpCol) && strcmpi(prog{r, fpCol}, 'Yes')
+            status = 'First pass complete';
+        end
+        if ~isempty(cmCol), comments = prog{r, cmCol}; end
+    end
+end
+
+% --- This deployment's row (all as text, like the other sheets)
+cols = {'Deployment', 'Species', 'Complete', 'TagOnTime_s', 'TagOffTime_s', ...
+    'DeploymentDuration_h', 'NumHeartbeats', 'NumCertainBeats', 'NumPossibleBeats', ...
+    'NumSegments', 'NumRRIntervals', 'MeanSegmentDuration_min', ...
+    'MedianSegmentDuration_min', 'SDSegmentDuration_min', 'MeanBeatsPerSegment', ...
+    'MedianBeatsPerSegment', 'SDBeatsPerSegment', 'PercentCleanECG', ...
+    'MeanHeartRate_bpm', 'MedianHeartRate_bpm', 'SDHeartRate_bpm', ...
+    'LastUpdated', 'Comments'};
+vals = {R.deployment, R.species, status, R.tagOn, R.tagOff, ...
+    round(tagOnDur / 3600, 3), ...                          % hours
+    nBeats, sum(cert == 1), sum(cert == 2), numel(segDurS), numel(hr), ...
+    twoDecimals(mean(segMin)), twoDecimals(median(segMin)), twoDecimals(std(segMin)), ...
+    twoDecimals(mean(segBeats)), twoDecimals(median(segBeats)), twoDecimals(std(segBeats)), ...
+    twoDecimals(100 * sum(segDurS) / tagOnDur), ...         % % of tag-on with clean ECG
+    twoDecimals(mean(hr)), twoDecimals(median(hr)), twoDecimals(std(hr)), ...
+    char(datetime('today', 'Format', 'yyyy-MM-dd')), comments};
+vals = cellfun(@settingToText, vals, 'UniformOutput', false);   % empty/NaN -> ''
+
+% --- Existing sheet, matched by column name; replace or add this row; sort
+rows = cell(0, numel(cols));
+if isfile(R.infoFile)
+    old = readcell(R.infoFile, 'Delimiter', ',', 'DatetimeType', 'text');   % keep dates as text
+    old = cellfun(@settingToText, old, 'UniformOutput', false);
+    for r = 2:size(old, 1)
+        row = repmat({''}, 1, numel(cols));
+        for c = 1:numel(cols)
+            col = find(strcmp(old(1, :), cols{c}), 1);
+            if ~isempty(col), row{c} = old{r, col}; end
+        end
+        rows(end + 1, :) = row;            %#ok<AGROW>
+    end
+end
+rows(strcmp(rows(:, 1), R.deployment), :) = [];   % drop the old row for this deployment
+rows(end + 1, :) = vals;                          % add the current one
+[~, order] = sort(lower(rows(:, 1)));             % deployments in alphabetical order
+rows = rows(order, :);
+
+try
+    writecell([cols; rows], R.infoFile);
+    fprintf('Deployment information updated: %s\n', R.infoFile);
+catch
+    warning(['Could not write %s. Is it open in Excel? Close it; it will be ' ...
+        'updated at the next save.'], R.infoFile);
+end
+end
+
+function txt = twoDecimals(x)
+% Number as text with exactly two decimal places (e.g. 1.8 -> '1.80');
+% missing values (NaN) become ''.
+if isempty(x) || isnan(x)
+    txt = '';
+else
+    txt = sprintf('%.2f', x);
+end
 end
