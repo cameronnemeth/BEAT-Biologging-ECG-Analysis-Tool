@@ -26,8 +26,8 @@ If those pieces are in place, you should be ready to click "Run" in MATLAB and m
 ```text
 HeartRate/
 │
-├── HeartbeatDetector.m
-├── HeartbeatDetector_Protocol.pdf
+├── BEAT.m
+├── BEAT_Protocol.pdf
 │
 ├── bb260613-A2/
 │   └── Data/
