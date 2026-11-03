@@ -1,5 +1,5 @@
-# **Heartbeat Detector Script**
-A private repository for HeartbeatDetector.m and associated files.  
+# **BEAT Script**
+A private repository for BEAT.m and associated files.  
 
 This script was designed to process ECG data from animal-borne tags: detecting
 heartbeats (R waves) semi-automatically, reviewing and correcting them manually, and
