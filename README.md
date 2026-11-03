@@ -1,5 +1,5 @@
 # **BEAT: Biologging ECG Analysis Tool**
-A private repository for BEAT.m and associated files.  
+A repository for BEAT.m and associated files.  
 
 This script was designed to process ECG data from animal-borne tags: detecting
 heartbeats (R waves) semi-automatically, reviewing and correcting them manually, and
