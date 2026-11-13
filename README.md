@@ -45,3 +45,13 @@ HeartRate/
             └── mn250303-H4.txt
 ```
 
+# AI usage disclosure
+BEAT was developed with the assistance of Claude (Anthropic), a generative AI assistant, used through claude.ai (model: Claude Opus 5.5).
+
+**Where it was used**
+- **Code:** Claude drafted MATLAB code for BEAT.m in response to the author's requests, one change at a time. The author made all design decisions: the workflow, what each window shows, how beats are edited and marked, which settings are recorded, and how output files are structured.
+- **Documentation:** Claude helped draft and edit comments in the script, parts of the protocol, and parts of the README and CHANGELOG files.
+
+**How outputs were checked**
+The author reviewed changes before adding them to the script and tested each version on real tag deployments from several species (e.g., short-finned pilot whale, loggerhead turtle). Restructuring changes were checked against earlier versions; for example, detected beat counts were confirmed identical before and after filtering and detection were moved into functions. 
+
