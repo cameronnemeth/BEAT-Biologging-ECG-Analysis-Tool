@@ -21,6 +21,8 @@ interactive window to review and edit them, saving the results and the settings 
 To begin using the program, download the script and protocol and place them inside of a folder where you will host all of your ECG tag deployments. 
 The protocol PDF in this repository is designed to take you through the script, step by step. 
 To make sure your folder structure is correctly set up for the script to run, see the example folder tree below with three example tag deployments (e.g., gm240124-C1).
+As of version 4.2, your datasheets may be present in either a "Raw" or "Processed" folder. These may be either .txt or .csv, and these can be named whatever you would like. I name them the same as the folder, for consistency. 
+
 If those pieces are in place, you should be ready to click "Run" in MATLAB and move through the program! 
 
 ```text
@@ -32,17 +34,18 @@ HeartRate/
 ├── bb260613-A2/
 │   └── Data/
 │       └── Raw/
-│           └── bb260613-A2.txt
+│           └── bb260613-A2.txt          ← data in Raw (.txt)
 │
 ├── gm240124-C1/
 │   └── Data/
 │       └── Raw/
-│           └── gm240124-C1.txt
+│           └── gm240124-C1.csv          ← data in Raw (.csv)
 │
 └── mn250303-H4/
     └── Data/
-        └── Raw/
-            └── mn250303-H4.txt
+        ├── Raw/                         ← can be empty, or hold the original files
+        └── Processed/
+            └── mn250303-H4.csv          ← data in Processed (e.g. already prepared)
 ```
 
 # AI usage disclosure
