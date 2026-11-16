@@ -3,6 +3,12 @@
 All notable changes to BEAT (Biologging ECG Analysis Tool) are listed here,
 newest first. Dates are day-month-year.
 
+## [4.2] – 15-11-2026
+
+### Changed
+- The data file can now be in Data\Raw or Data\Processed (for example, a file already prepared from the raw data). If the same file name is in both, the one in Processed is used.
+- Automatic detection tuning window: the red circles now sit just above their peaks, at your Marker gap (a percentage of the plot height on screen), as in the review window. Previously they could float far above small peaks.
+
 ## [4.1] – 03-11-2026
 
 ### Changed
