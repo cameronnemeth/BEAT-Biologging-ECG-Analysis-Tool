@@ -2,13 +2,22 @@
 % BEAT: Biologging ECG Analysis Tool
 % Semi-automated R-wave detection and interactive review for ECG tag data
 %
-% Version 4.1
+%
+% Version 4.2
+%
+% CHANGES IN 4.2
+%   - The data file can now be in Data\Raw or Data\Processed (e.g. a file
+%     already prepared from the raw data). If the same file name is in
+%     both, the one in Processed is used.
+%   - Detection tuning: red circles now sit just above their peaks, at your
+%     Marker gap (% of the plot height on screen), as in the review window.
+%     Previously they could float far above small peaks.
 %
 % Created by: Cameron Nemeth, with Claude
 % Email: ncnemeth@hawaii.edu
+% Last modified: 15-11-2026
 %
-% Last modified: 03-11-2026
-%
+% -------------------------------------------------------------------------
 %
 % HOW TO USE
 %   1. Keep this script directly in the top-level project folder (e.g.
@@ -18,14 +27,17 @@
 %
 %   2. Put each deployment in its own folder next to the script (any name),
 %      with a "Data" folder inside it and a "Raw" folder inside that. The
-%      script creates "Processed". The Raw folder holds the raw data text
-%      file (any name), which can be:
+%      script creates "Processed" if it does not exist. The data text file
+%      (any name) can be in either Raw or Processed (e.g. a file already
+%      prepared from the raw data), and can be:
 %        - a LabChart "Export As Text" file with the block header, or
 %        - a file with one row of column names above the numbers, or
 %        - a file of numbers only (no column names).
 %      Columns can be separated by tabs, commas or spaces, and time must be
 %      in seconds. Other files (e.g. the LabChart file itself) can sit in
-%      Raw too; you choose which file to use in the setup window.
+%      these folders too; you choose which file to use in the setup window.
+%      If a file with the same name is in both folders, the one in
+%      Processed is used.
 %
 %   3. Press Run (F5). A popup asks what to do:
 %
@@ -59,8 +71,9 @@
 %        Processed\<deployment>_Settings.csv
 %            The settings used for this deployment. Existing deployments
 %            are reopened with these.
-%        Raw\<deployment>_imported_time_depth_ecg.mat
-%            Time, ECG, depth and acceleration, copied from the raw file so
+%        <deployment>_imported_time_depth_ecg.mat (in the same folder as
+%        the data file: Raw or Processed)
+%            Time, ECG, depth and acceleration, copied from the data file so
 %            later runs load in seconds. Safe to delete; it is rebuilt
 %            automatically.
 %        HeartRate_Reference_Settings.csv (in the project folder)
@@ -167,7 +180,7 @@ else
     if isempty(settings)
         error('Setup was cancelled. Run the script again.');
     end
-    fprintf('New deployment: %s\nRaw file: %s\nSpecies: %s\n', ...
+    fprintf('New deployment: %s\nData file: %s\nSpecies: %s\n', ...
         settings.deployment, settings.rawFile, settings.species);
 end
 
@@ -207,11 +220,26 @@ end
 fprintf('Project folder: %s\n', rootDir);
 
 paths.root      = rootDir;
-paths.raw       = fullfile(rootDir, settings.deployment, 'Data', 'Raw', settings.rawFile);
 paths.processed = fullfile(rootDir, settings.deployment, 'Data', 'Processed');
-if ~isfile(paths.raw)
-    error('Raw file not found:\n  %s\nCheck settings.deployment and settings.rawFile.', paths.raw);
+
+% The data file (settings.rawFile) can be in Processed or Raw. Processed is
+% checked first; if the same file name is in both, the one in Processed is
+% used. paths.raw is the full path of the file actually used.
+inProcessed = fullfile(paths.processed, settings.rawFile);
+inRaw       = fullfile(rootDir, settings.deployment, 'Data', 'Raw', settings.rawFile);
+if isfile(inProcessed)
+    paths.raw = inProcessed;
+    if isfile(inRaw)
+        fprintf('Note: %s is in both Processed and Raw; using the one in Processed.\n', ...
+            settings.rawFile);
+    end
+elseif isfile(inRaw)
+    paths.raw = inRaw;
+else
+    error(['Data file not found in Processed or Raw:\n  %s\n  %s\n' ...
+        'Check settings.deployment and settings.rawFile.'], inProcessed, inRaw);
 end
+fprintf('Data file: %s\n', paths.raw);
 if ~isfolder(paths.processed)
     mkdir(paths.processed);
     fprintf('Created output folder: %s\n', paths.processed);
@@ -249,13 +277,13 @@ end
 % Command Window on every run, so they can be checked.
 %
 % The first run reads the text file (slow) and saves a .mat copy of just
-% the time, depth and ECG columns in the Raw folder, next to the text file
+% the time, depth and ECG columns next to the text file (Raw or Processed)
 % (<deployment>_imported_time_depth_ecg.mat). Later runs load that copy
 % instead (fast). If the text file has been modified since the copy was
 % saved (e.g. a re-export), a popup asks whether to re-import it. The copy
 % is also rebuilt automatically if the raw file name or any column setting
-% changes. To force a fresh import, delete the .mat file in the Raw folder.
-cacheFile = fullfile(fileparts(paths.raw), ...                      % the Raw folder
+% changes. To force a fresh import, delete that .mat file.
+cacheFile = fullfile(fileparts(paths.raw), ...                      % same folder as the data file
     [settings.deployment '_imported_time_depth_ecg.mat']);
 
 % The column settings for this run, as one line of text, so the saved copy
@@ -2469,7 +2497,7 @@ h.dep = mk('edit', '(click Browse... to choose)', [0.20 0.89 0.56 0.035], ...
     'Enable', 'inactive', 'HorizontalAlignment', 'left');
 mk('pushbutton', 'Browse...', [0.78 0.888 0.12 0.04], 'Callback', @(~, ~) setupBrowse(fig));
 
-lbl('Raw data file:', [0.03 0.835 0.16 0.035]);
+lbl('Data file:', [0.03 0.835 0.16 0.035]);
 h.raw = mk('popupmenu', {' '}, [0.20 0.84 0.56 0.035], 'Callback', @(~, ~) setupRawChanged(fig));
 
 lbl('Species:', [0.03 0.785 0.16 0.035]);
@@ -2543,38 +2571,63 @@ if ~strcmpi(fullfile(parent), fullfile(U.projectDir))
         'Wrong folder', 'modal');
     return
 end
-rawDir = fullfile(d, 'Data', 'Raw');
-if ~isfolder(rawDir)
-    warndlg(sprintf('This folder has no Data\\Raw folder:\n%s', d), 'No Raw folder', 'modal');
+procDir = fullfile(d, 'Data', 'Processed');
+rawDir  = fullfile(d, 'Data', 'Raw');
+if ~isfolder(rawDir) && ~isfolder(procDir)
+    warndlg(sprintf('This folder has no Data\\Raw or Data\\Processed folder:\n%s', d), ...
+        'No data folder', 'modal');
     return
 end
 
-% --- Files in the Raw folder (text files first; the script's own copy is left out)
-f  = dir(rawDir);
-fn = {f(~[f.isdir]).name};
-fn = fn(~startsWith(fn, '.') & ~endsWith(fn, '_imported_time_depth_ecg.mat'));
-if isempty(fn)
-    warndlg(sprintf('The Raw folder is empty:\n%s', rawDir), 'No files', 'modal');
+% --- Data files: Processed first, then Raw. The list shows each file with
+%     its folder (e.g. Processed\gm260922-H6.csv, Raw\ECG_DATA.csv).
+%     Processed: text files only, leaving out the sheets this script saves
+%     there (_Heartbeats, _Settings) and any _Diagnostics sheet.
+%     Raw: text files first; this script's saved copy is left out.
+fileNames = {};  fileDirs = {};  labels = {};
+if isfolder(procDir)
+    f  = dir(procDir);
+    fn = {f(~[f.isdir]).name};
+    keep = endsWith(lower(fn), {'.txt', '.csv'}) & ~startsWith(fn, '.') & ...
+        ~endsWith(fn, {'_Heartbeats.csv', '_Settings.csv', '_Diagnostics.csv'});
+    fn = sort(fn(keep));
+    fileNames = [fileNames, fn];
+    fileDirs  = [fileDirs, repmat({procDir}, 1, numel(fn))];
+    labels    = [labels, cellfun(@(x) ['Processed\' x], fn, 'UniformOutput', false)];
+end
+if isfolder(rawDir)
+    f  = dir(rawDir);
+    fn = {f(~[f.isdir]).name};
+    fn = fn(~startsWith(fn, '.') & ~endsWith(fn, '_imported_time_depth_ecg.mat'));
+    isText = endsWith(lower(fn), {'.txt', '.csv'});
+    fn = [sort(fn(isText)), sort(fn(~isText))];
+    fileNames = [fileNames, fn];
+    fileDirs  = [fileDirs, repmat({rawDir}, 1, numel(fn))];
+    labels    = [labels, cellfun(@(x) ['Raw\' x], fn, 'UniformOutput', false)];
+end
+if isempty(fileNames)
+    warndlg(sprintf('No data files found in Data\\Processed or Data\\Raw:\n%s', d), ...
+        'No files', 'modal');
     return
 end
-isText = endsWith(lower(fn), {'.txt', '.csv'});
-fn = [sort(fn(isText)), sort(fn(~isText))];
 
 % --- Pre-fill from this deployment's settings sheet, if there is one
-U.depDir  = d;
-U.depName = name;
-U.prefill = struct();
+U.depDir    = d;
+U.depName   = name;
+U.fileNames = fileNames;                   % file names, in list order
+U.fileDirs  = fileDirs;                    % the folder of each file
+U.prefill   = struct();
 sheet = fullfile(d, 'Data', 'Processed', [name '_Settings.csv']);
 if isfile(sheet)
     U.prefill = readSettingsSheet(sheet);
 end
 U.h.dep.String = name;
-k = 1;                                     % first file (a text file, if any)
+k = 1;                                     % first file (Processed first, then Raw)
 if isfield(U.prefill, 'rawFile')
-    kk = find(strcmp(fn, settingToText(U.prefill.rawFile)), 1);
+    kk = find(strcmp(fileNames, settingToText(U.prefill.rawFile)), 1);   % Processed first, as in PATHS
     if ~isempty(kk), k = kk; end
 end
-set(U.h.raw, 'String', fn, 'Value', k);
+set(U.h.raw, 'String', labels, 'Value', k);
 if isfield(U.prefill, 'species') && ~isempty(U.prefill.species)
     U.h.speciesEdit.String = settingToText(U.prefill.species);
 end
@@ -2598,12 +2651,12 @@ h = U.h;
 files = h.raw.String;
 if isempty(U.depDir) || isempty(files), return; end
 if ischar(files), files = {files}; end
-rawFile   = files{h.raw.Value};
+rawFile   = U.fileNames{h.raw.Value};     % file name only (the list also shows its folder)
 colKeys   = {'time', 'ecg', 'depth', 'ax', 'ay', 'az'};
 colFields = {'timeChannel', 'ecgChannel', 'depthChannel', 'accelX', 'accelY', 'accelZ'};
 
 try
-    L = readFileLayout(fullfile(U.depDir, 'Data', 'Raw', rawFile));
+    L = readFileLayout(fullfile(U.fileDirs{h.raw.Value}, rawFile));
 catch err
     U.L = [];
     fig.UserData = U;
@@ -2682,6 +2735,16 @@ if isempty(L)
     warndlg('Choose a raw data file that the script can read.', 'Setup', 'modal');
     return
 end
+% --- Same file name in Processed and Raw: PATHS always uses the one in
+%     Processed, so a Raw copy with the same name cannot be chosen
+fName = U.fileNames{h.raw.Value};
+if strcmp(U.fileDirs{h.raw.Value}, fullfile(U.depDir, 'Data', 'Raw')) && ...
+        isfile(fullfile(U.depDir, 'Data', 'Processed', fName))
+    warndlg(sprintf(['%s is in both Processed and Raw. The script always uses ' ...
+        'the copy in Processed, so choose Processed\\%s from the list, or rename ' ...
+        'one of them.'], fName, fName), 'Setup', 'modal');
+    return
+end
 species = strtrim(h.speciesEdit.String);
 if isempty(species)
     warndlg('Enter the species (pick an existing one, or type a new one).', 'Setup', 'modal');
@@ -2712,14 +2775,12 @@ end
 
 % --- Column settings: kept exactly as recorded if unchanged; otherwise
 %     the column's name (if the names are clear) or its number
-files = h.raw.String;
-if ischar(files), files = {files}; end
 colFields = {'timeChannel', 'ecgChannel', 'depthChannel', 'accelX', 'accelY', 'accelZ'};
 useNames  = ~isempty(L.names) && numel(L.names) == L.nCols && ...
     numel(unique(L.names)) == numel(L.names);
 cfg.species    = species;
 cfg.deployment = U.depName;
-cfg.rawFile    = files{h.raw.Value};
+cfg.rawFile    = U.fileNames{h.raw.Value};   % file name only; PATHS finds its folder
 for j = 1:6
     i = sel(j);
     if U.usePrefill && isfield(U.prefill, colFields{j}) && ...
@@ -3130,6 +3191,10 @@ D.cand       = [];
 D.nOversized = 0;
 D.h          = h;
 D.accepted   = false;
+D.gapPct     = 5;                          % circle gap: % of the trace height on screen
+if ispref('BEAT', 'markerGapPct')          % your Marker gap preference, if set
+    D.gapPct = getpref('BEAT', 'markerGapPct');
+end
 fig.UserData = D;
 fig.CloseRequestFcn = @(~, ~) uiresume(fig);   % closing = stop (see below)
 addlistener(axE, 'XLim', 'PostSet', @(~, ~) detectTuneRefresh(fig));
@@ -3164,13 +3229,8 @@ title(D.axTop, 'Detecting... (a few seconds)', 'Color', [0.8 0.4 0]);
 drawnow;
 [beats, cand, nOv] = detectBeats(D.t, D.x, D.fs, v);
 
-% --- Red circles, just above each peak
-if isempty(beats)
-    offset = 0;
-else
-    offset = 0.15 * median(beats.Prominence);
-end
-set(D.hB, 'XData', beats.Time, 'YData', beats.Height + offset);
+% --- Red circles on each peak (the gap above it is added in detectTuneRefresh)
+set(D.hB, 'XData', beats.Time, 'YData', beats.Height);
 
 D.vals = v;  D.beats = beats;  D.cand = cand;  D.nOversized = nOv;
 fig.UserData = D;
@@ -3212,8 +3272,19 @@ end
 
 function detectTuneRefresh(fig)
 % Redraws every panel for the stretch on screen, including the circles.
+% The circles sit above their peaks by D.gapPct % of the height of the
+% filtered ECG on screen, so the gap looks the same at any zoom.
 if ~isvalid(fig), return; end
 D = fig.UserData;
+if ~isempty(D.beats)
+    xl  = D.axE.XLim;
+    i1  = max(1, floor((xl(1) - D.t(1)) * D.fs) + 1);
+    i2  = min(numel(D.t), ceil((xl(2) - D.t(1)) * D.fs) + 1);
+    seg = D.x(i1:i2);
+    rng = max(seg, [], 'omitnan') - min(seg, [], 'omitnan');
+    if isempty(rng) || ~isfinite(rng) || rng <= 0, rng = 1; end
+    set(D.hB, 'YData', D.beats.Height + D.gapPct / 100 * rng);
+end
 refreshDetection(D.axE, D.hLines, D.hB, D.t, D.sigs, D.fs);
 end
 
